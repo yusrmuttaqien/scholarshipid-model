@@ -84,3 +84,4 @@ tensorboard/
 
 # ─── Local Claude / agent state ──────────────────────────
 .claude/
+CLAUDE.md
