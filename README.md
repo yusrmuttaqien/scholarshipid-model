@@ -1,4 +1,4 @@
-# Scholarship.id — Two-Tower Recommendation System
+# Scholarship.id: Two-Tower Recommendation System
 
 Recommendation system for high school students seeking bachelor's scholarships abroad. Uses a two-tower neural network with a three-stage pipeline (hard filter → NN similarity → text similarity bonus).
 
@@ -44,7 +44,7 @@ class Student:
 
     # ─── Language Proficiency ─────────────────────────
     language_proficiency: List[LanguageProficiency]  # See LanguageProficiency below
-                                                     # Empty list is valid — many high school students
+                                                     # Empty list is valid for many high school students
                                                      # have not taken a formal language test yet
 
     # ─── Achievements ─────────────────────────────────
@@ -384,7 +384,7 @@ The two-tower neural network is trained as a **regression model** that predicts 
 | **In-Between** | 0.3 – 0.7 | Moderate alignment, borderline cases |
 | **Not Match** | < 0.3 | Low alignment between student and scholarship |
 
-**Key point**: Hard filters are NOT used during training. The model learns soft similarity from the full spectrum of pairs — including ineligible matches (high relevance_score) and eligible but poor matches (low relevance_score). This allows the NN to learn fine-grained distinctions.
+**Key point**: Hard filters are NOT used during training. The model learns soft similarity from the full spectrum of pairs, including ineligible matches (high relevance_score) and eligible but poor matches (low relevance_score). This allows the NN to learn fine-grained distinctions.
 
 ### Inference Pipeline (Serving Recommendations)
 
