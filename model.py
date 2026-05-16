@@ -31,7 +31,12 @@ class CosineSimilarity(keras.layers.Layer):
         super().__init__(**kwargs)
 
     def call(self, inputs, training=None):
-        """Compute cosine similarity + sigmoid.
+        """Compute cosine similarity + rescale to [0, 1].
+
+        Cosine similarity ranges naturally in [-1, 1].
+        We rescale via: score = (cosine_sim + 1.0) / 2.0
+        This maps [-1, 1] linearly to [0, 1], allowing the model
+        to predict the full target range.
 
         Args:
             inputs: Tuple of (student_embedding, scholarship_embedding)
@@ -49,8 +54,9 @@ class CosineSimilarity(keras.layers.Layer):
         # Cosine similarity (element-wise product -> sum over embedding dim)
         cosine_sim = tf.reduce_sum(student_norm * scholarship_norm, axis=-1, keepdims=True)
 
-        # Sigmoid maps [-1, 1] to roughly [0.27, 0.73]
-        score = tf.sigmoid(cosine_sim)
+        # Rescale from [-1, 1] to [0, 1]
+        # (cosine + 1) / 2 maps -1 -> 0, 0 -> 0.5, +1 -> 1.0
+        score = (cosine_sim + 1.0) / 2.0
 
         return score
 

@@ -114,7 +114,6 @@ def load_raw_data(
     scholarships_csv: str = "./datasets_two_tower/scholarships.csv",
     pairs_csv: str = "./datasets_two_tower/pairs.csv",
 ) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    """Load raw CSV data into pandas DataFrames."""
     students_df = pd.read_csv(students_csv)
     scholarships_df = pd.read_csv(scholarships_csv)
     pairs_df = pd.read_csv(pairs_csv)
@@ -126,7 +125,6 @@ def split_pairs_time_based(
     train_ratio: float = 0.70,
     val_ratio: float = 0.15,
 ) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    """Split pairs by timestamp (already sorted in generator)."""
     pairs_df = pairs_df.sort_values("timestamp").reset_index(drop=True)
     n = len(pairs_df)
     train_end = int(n * train_ratio)
@@ -141,7 +139,6 @@ def _build_string_lookups(
     train_df: pd.DataFrame,
     categorical_cols: List[str],
 ) -> Dict[str, tf.keras.layers.StringLookup]:
-    """Build StringLookup layers for the given categorical columns."""
     lookups = {}
     for col in categorical_cols:
         lookup = tf.keras.layers.StringLookup(
@@ -150,6 +147,8 @@ def _build_string_lookups(
             output_mode="int",
         )
         values = train_df[col].dropna().unique().tolist()
+        if not values:
+            values = [""]
         lookup.adapt(tf.constant(values, dtype=tf.string))
         lookups[col] = lookup
     return lookups
@@ -159,78 +158,132 @@ def _build_normalizers(
     train_df: pd.DataFrame,
     numerical_cols: List[str],
 ) -> Dict[str, tf.keras.layers.Normalization]:
-    """Build Normalization layers for the given numerical columns."""
     normalizers = {}
     for col in numerical_cols:
         values = train_df[col].dropna().values.astype(np.float32)
+        if len(values) == 0:
+            values = np.array([0.0], dtype=np.float32)
         normalizer = tf.keras.layers.Normalization(axis=None)
         normalizer.adapt(tf.constant(values))
         normalizers[col] = normalizer
     return normalizers
 
 
-def _row_to_input_list(
-    row: pd.Series,
-) -> List[tf.Tensor]:
-    """Convert a merged DataFrame row into a flat list of input tensors.
+def _prepare_tensor_slices(merged_df: pd.DataFrame) -> Tuple[Tuple[np.ndarray, ...], np.ndarray]:
+    """Pre-compute all input tensors as numpy arrays from merged DataFrame.
 
-    The order MUST match the order of Input layers in the combined model:
-        Student: 6 categorical, 8 numerical, 4 boolean, 1 language_vector
-        Scholarship: 4 categorical, 6 numerical, 7 boolean, 1 list_vector
+    This replaces the Python generator with bulk numpy operations,
+    enabling from_tensor_slices() which is much faster at training time.
+
+    Returns:
+        (input_tensors_tuple, relevance_array)
     """
-    tensors = []
+    n = len(merged_df)
 
-    # Student categorical (6)
+    # Pre-allocate arrays for each input slot
+    # Student categorical (6) — these are strings, store as object arrays
+    student_cat_arrays = []
     for col in STUDENT_CATEGORICAL_COLS:
-        val = str(row[f"student_{col}"]) if pd.notna(row.get(f"student_{col}")) else ""
-        tensors.append(tf.constant(val, dtype=tf.string))
+        arr = np.empty(n, dtype=object)
+        for i, (_, row) in enumerate(merged_df.iterrows()):
+            val = row.get(f"student_{col}")
+            arr[i] = str(val) if pd.notna(val) else ""
+        student_cat_arrays.append(arr)
 
     # Student numerical (8)
+    student_num_arrays = []
     for col in STUDENT_NUMERICAL_COLS:
-        val = float(row.get(f"student_{col}", 0.0)) if pd.notna(row.get(f"student_{col}")) else 0.0
-        tensors.append(tf.constant(val, dtype=tf.float32))
+        arr = np.zeros(n, dtype=np.float32)
+        for i, (_, row) in enumerate(merged_df.iterrows()):
+            val = row.get(f"student_{col}")
+            arr[i] = float(val) if pd.notna(val) else 0.0
+        student_num_arrays.append(arr)
 
     # Student boolean (4)
+    student_bool_arrays = []
     for col in STUDENT_BOOLEAN_COLS:
-        val = float(row.get(f"student_{col}", 0.0)) if pd.notna(row.get(f"student_{col}")) else 0.0
-        tensors.append(tf.constant(val, dtype=tf.float32))
+        arr = np.zeros(n, dtype=np.float32)
+        for i, (_, row) in enumerate(merged_df.iterrows()):
+            val = row.get(f"student_{col}")
+            arr[i] = float(val) if pd.notna(val) else 0.0
+        student_bool_arrays.append(arr)
 
     # Student language vector (12-dim)
-    tensors.append(
-        tf.constant(
-            _parse_language_proficiency(row.get("student_language_proficiency", "[]")),
-            dtype=tf.float32,
+    lang_vectors = np.zeros((n, 12), dtype=np.float32)
+    for i, (_, row) in enumerate(merged_df.iterrows()):
+        lang_vectors[i] = _parse_language_proficiency(
+            row.get("student_language_proficiency", "[]")
         )
-    )
 
     # Scholarship categorical (4)
+    scholar_cat_arrays = []
     for col in SCHOLARSHIP_CATEGORICAL_COLS:
-        val = str(row[f"scholarship_{col}"]) if pd.notna(row.get(f"scholarship_{col}")) else ""
-        tensors.append(tf.constant(val, dtype=tf.string))
+        arr = np.empty(n, dtype=object)
+        for i, (_, row) in enumerate(merged_df.iterrows()):
+            val = row.get(f"scholarship_{col}")
+            arr[i] = str(val) if pd.notna(val) else ""
+        scholar_cat_arrays.append(arr)
 
     # Scholarship numerical (6)
+    scholar_num_arrays = []
     for col in SCHOLARSHIP_NUMERICAL_COLS:
-        val = float(row.get(f"scholarship_{col}", 0.0)) if pd.notna(row.get(f"scholarship_{col}")) else 0.0
-        tensors.append(tf.constant(val, dtype=tf.float32))
+        arr = np.zeros(n, dtype=np.float32)
+        for i, (_, row) in enumerate(merged_df.iterrows()):
+            val = row.get(f"scholarship_{col}")
+            arr[i] = float(val) if pd.notna(val) else 0.0
+        scholar_num_arrays.append(arr)
 
     # Scholarship boolean (7)
+    scholar_bool_arrays = []
     for col in SCHOLARSHIP_BOOLEAN_COLS:
-        val = float(row.get(f"scholarship_{col}", 0.0)) if pd.notna(row.get(f"scholarship_{col}")) else 0.0
-        tensors.append(tf.constant(val, dtype=tf.float32))
+        arr = np.zeros(n, dtype=np.float32)
+        for i, (_, row) in enumerate(merged_df.iterrows()):
+            val = row.get(f"scholarship_{col}")
+            arr[i] = float(val) if pd.notna(val) else 0.0
+        scholar_bool_arrays.append(arr)
 
-    # Scholarship list vector (46-dim: 27 countries + 5 tracks + 14 fields)
-    tensors.append(
-        tf.constant(
-            np.concatenate([
-                _encode_list_field(row.get("scholarship_eligible_nationalities", "[]"), ALL_COUNTRIES),
-                _encode_list_field(row.get("scholarship_eligible_high_school_tracks", "[]"), ALL_HIGH_SCHOOL_TRACKS),
-                _encode_list_field(row.get("scholarship_eligible_fields", "[]"), ALL_MAJOR_FIELDS),
-            ]),
-            dtype=tf.float32,
-        )
+    # Scholarship list vector (46-dim)
+    list_dim = len(ALL_COUNTRIES) + len(ALL_HIGH_SCHOOL_TRACKS) + len(ALL_MAJOR_FIELDS)  # 46
+    list_vectors = np.zeros((n, list_dim), dtype=np.float32)
+    for i, (_, row) in enumerate(merged_df.iterrows()):
+        list_vectors[i] = np.concatenate([
+            _encode_list_field(row.get("scholarship_eligible_nationalities", "[]"), ALL_COUNTRIES),
+            _encode_list_field(row.get("scholarship_eligible_high_school_tracks", "[]"), ALL_HIGH_SCHOOL_TRACKS),
+            _encode_list_field(row.get("scholarship_eligible_fields", "[]"), ALL_MAJOR_FIELDS),
+        ])
+
+    # Relevance scores
+    relevance = np.zeros(n, dtype=np.float32)
+    for i, (_, row) in enumerate(merged_df.iterrows()):
+        val = row.get("relevance_score")
+        relevance[i] = float(val) if pd.notna(val) else 0.0
+
+    # Combine in the order: student(6 cat, 8 num, 4 bool, 1 lang) + scholarship(4 cat, 6 num, 7 bool, 1 list)
+    input_tensors = (
+        *student_cat_arrays,   # 6
+        *student_num_arrays,   # 8
+        *student_bool_arrays,  # 4
+        lang_vectors,          # 1 (12-dim)
+        *scholar_cat_arrays,   # 4
+        *scholar_num_arrays,   # 6
+        *scholar_bool_arrays,  # 7
+        list_vectors,          # 1 (46-dim)
     )
 
-    return tensors
+    return input_tensors, relevance
+
+
+def _make_tensor_spec_from_array(arr: np.ndarray) -> tf.TensorSpec:
+    """Create a TensorSpec from a numpy array."""
+    if arr.dtype == object:
+        # String input: scalar shape
+        return tf.TensorSpec(shape=(), dtype=tf.string)
+    elif len(arr.shape) == 1:
+        # 1D numeric: scalar shape
+        return tf.TensorSpec(shape=(), dtype=tf.float32)
+    else:
+        # Multi-dim: preserve last dim
+        return tf.TensorSpec(shape=(arr.shape[1],), dtype=tf.float32)
 
 
 def create_datasets(
@@ -243,8 +296,10 @@ def create_datasets(
 ) -> Tuple[tf.data.Dataset, tf.data.Dataset, tf.data.Dataset, Dict]:
     """Create train, validation, and test tf.data.Datasets.
 
-    Each dataset yields (input_list, relevance_score) where input_list is a flat
-    list of tensors matching the combined model's input order.
+    Uses from_tensor_slices for fast tensor-based data loading.
+
+    Each dataset yields (input_tuple, relevance_score) where input_tuple is a
+    flat tuple of tensors matching the combined model's input order.
 
     Returns:
         (train_ds, val_ds, test_ds, preprocessors)
@@ -315,27 +370,19 @@ def create_datasets(
     }
 
     def dataframe_to_dataset(df: pd.DataFrame, shuffle: bool = False) -> tf.data.Dataset:
-        def gen():
-            for _, row in df.iterrows():
-                inputs = _row_to_input_list(row)
-                relevance = tf.constant(
-                    float(row["relevance_score"]) if pd.notna(row["relevance_score"]) else 0.0,
-                    dtype=tf.float32,
-                )
-                yield (tuple(inputs), relevance)
+        # Pre-compute all numpy arrays
+        input_tensors, relevance = _prepare_tensor_slices(df)
 
-        # Build output signature from first row
-        first_inputs = _row_to_input_list(df.iloc[0])
-        input_specs = tuple(
-            tf.TensorSpec(shape=t.shape if t.shape.rank > 0 else (), dtype=t.dtype, name="")
-            for t in first_inputs
-        )
-
+        # Build TensorSpecs
+        input_specs = tuple(_make_tensor_spec_from_array(arr) for arr in input_tensors)
         output_signature = (input_specs, tf.TensorSpec(shape=(), dtype=tf.float32))
 
-        ds = tf.data.Dataset.from_generator(gen, output_signature=output_signature)
+        # Create dataset from tensor slices — MUCH faster than from_generator
+        ds = tf.data.Dataset.from_tensor_slices((input_tensors, relevance))
+
         if shuffle:
             ds = ds.shuffle(shuffle_buffer)
+
         ds = ds.batch(batch_size, drop_remainder=False).prefetch(prefetch)
         return ds
 
