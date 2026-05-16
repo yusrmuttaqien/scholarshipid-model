@@ -1,6 +1,6 @@
 # Scholarship.id — Two-Tower Recommendation System
 
-Recommendation system for SMA-level high school students seeking scholarships abroad. Uses a two-tower neural network with a three-stage pipeline (hard filter → NN similarity → TF-IDF text bonus).
+Recommendation system for high school students seeking bachelor's scholarships abroad. Uses a two-tower neural network with a three-stage pipeline (hard filter → NN similarity → text similarity bonus).
 
 ---
 
@@ -24,42 +24,54 @@ Recommendation system for SMA-level high school students seeking scholarships ab
 class Student:
     # ─── Identity ─────────────────────────────────────
     student_id: str                    # Unique identifier (e.g., "STU_000001")
-    nationality: str                  # Country of citizenship
+    nationality: Country
 
     # ─── Demographics ─────────────────────────────────
-    age: int                          # 16-18 (SMA students)
-    current_degree_level: str         # Always "SMA"
-    target_degree_level: str          # "S1" (80%) or "S2" (20%)
+    age: int                           # 16-18 (high school students)
+    current_degree_level: DegreeLevel  # Always High School
+    target_degree_level: DegreeLevel   # Always Bachelor's
 
     # ─── Academic Profile ─────────────────────────────
-    current_major_field: str          # MajorField enum value
-    current_university: str           # School name
-    current_university_tier: str      # UniversityTier enum value
-    current_gpa_4scale: float         # GPA on 4.0 scale (2.0-4.0)
-    current_gpa_percentage: float     # GPA on percentage scale (50-100)
+    high_school_track: HighSchoolTrack
+    school_name: str                   # School name
+    overall_report_card_average: float # Overall report card average (0-100)
+    math_score: float                  # Math score on latest report card (0-100)
+    english_score: float               # English score on latest report card (0-100)
+    major_subject_average: float       # Average score of major-specific subjects (0-100)
+                                       #   Science → avg(Physics, Chemistry, Biology)
+                                       #   Social Studies → avg(Economics, Geography, Sociology)
+                                       #   Languages → avg(Literature, Anthropology, Foreign Language)
 
     # ─── Language Proficiency ─────────────────────────
     language_proficiency: List[LanguageProficiency]  # See LanguageProficiency below
+                                                     # Empty list is valid — many high school students
+                                                     # have not taken a formal language test yet
 
-    # ─── Experience Counts ────────────────────────────
-    research_experience_count: int    # Number of research projects
-    leadership_experience_count: int  # Leadership roles held
-    volunteer_experience_count: int   # Volunteer hours/projects
-    competition_wins_count: int       # Competition awards
+    # ─── Achievements ─────────────────────────────────
+    olympiad_level: OlympiadLevel
+    olympiad_subjects: List[OlympiadSubject]
+    leadership_experience_count: int   # Leadership roles held (student council, club head, etc.)
+    volunteer_experience_count: int    # Volunteer / community service activities
+    competition_wins_count: int        # Non-olympiad competition awards
+
+    # ─── Background ───────────────────────────────────
+    school_tier: SchoolTier
+    family_income_category: IncomeCategory
+    from_underrepresented_region: bool # From underrepresented regions
 
     # ─── Career Intent ────────────────────────────────
-    intended_career_track: str        # CareerTrack enum value
-    willing_to_return_home: bool      # Willing to return home after study
-    target_countries: List[str]       # Preferred destination countries
+    intended_career_track: CareerTrack
+    willing_to_return_home: bool       # Willing to return home after study
+    target_countries: List[Country]
 
-    # ─── Text Fields (for TF-IDF similarity) ──────────
-    personal_statement: str           # Personal statement text
-    achievements_narrative: str       # Achievement summary
-    research_interest: str            # Research interest area
+    # ─── Text Fields (for text similarity) ────────────
+    personal_statement: str            # Personal statement text
+    achievements_narrative: str        # Achievement summary
+    future_goals: str                  # Post-study contribution and career goals
 
     # ─── Funding Preferences ──────────────────────────
-    needs_full_funding: bool          # Wants fully-funded scholarship
-    can_self_fund_living: bool        # Can cover living expenses independently
+    needs_full_funding: bool           # Wants fully-funded scholarship
+    can_self_fund_living: bool         # Can cover living expenses independently
 ```
 
 ---
@@ -70,39 +82,42 @@ class Student:
 @dataclass
 class Scholarship:
     # ─── Identity ─────────────────────────────────────
-    scholarship_id: str               # Unique identifier (e.g., "SCH_000001")
-    name: str                         # Scholarship name
+    scholarship_id: str                # Unique identifier (e.g., "SCH_000001")
+    name: str                          # Scholarship name
 
     # ─── Eligibility Constraints (Hard Filters) ───────
-    eligible_nationalities: List[str] # Countries accepted
-    min_age: int                      # Minimum age requirement
-    max_age: int                      # Maximum age requirement
-    eligible_degree_levels: List[str] # Degree levels accepted (always includes "SMA")
-    eligible_fields: List[str]        # MajorField enum values accepted
-    eligible_majors_specific: List[str]  # Optional specific majors (30% chance)
-    min_gpa_4scale: float             # Minimum GPA on 4.0 scale
-    min_gpa_percentage: float         # Minimum GPA on percentage scale
+    eligible_nationalities: List[Country]
+    min_age: int                       # Minimum age requirement
+    max_age: int                       # Maximum age requirement
+    eligible_degree_levels: List[DegreeLevel]
+    eligible_high_school_tracks: List[HighSchoolTrack]
+    eligible_fields: List[MajorField]
+    preferred_school_tier: SchoolTier
+    min_report_card_average: float     # Minimum overall report card average (0-100)
+    min_major_subject_average: float   # Minimum major-subject average (0-100)
     language_requirements: List[LanguageRequirement]  # See LanguageRequirement below
+    requires_financial_need: bool      # Requires low-income family background
+    max_family_income_category: IncomeCategory
 
     # ─── Location ─────────────────────────────────────
-    host_country: str                 # Country where scholarship is based
-    host_region: str                  # HostRegion enum value
+    host_country: Country
+    host_region: HostRegion
 
     # ─── Selection Criteria (Weights) ─────────────────
     selection_criteria: SelectionCriteria  # See SelectionCriteria below
 
     # ─── Funding Coverage (Structured) ────────────────
-    funding_coverage: FundingCoverage # See FundingCoverage below
+    funding_coverage: FundingCoverage  # See FundingCoverage below
 
     # ─── Career Preference ────────────────────────────
-    career_track_preference: str      # Preferred career track (optional)
+    career_track_preference: CareerTrack
 
     # ─── Service Requirements ─────────────────────────
-    requires_return_home_country: bool  # Must return home after study
+    requires_return_home_country: bool # Must return home after study
 
-    # ─── Text Fields (for TF-IDF similarity) ──────────
-    mission_statement: str            # Scholarship mission text
-    target_recipient_profile: str     # Ideal candidate description
+    # ─── Text Fields (for text similarity) ────────────
+    mission_statement: str             # Scholarship mission text
+    target_recipient_profile: str      # Ideal candidate description
 ```
 
 ---
@@ -114,7 +129,7 @@ class Scholarship:
 ```python
 @dataclass
 class LanguageProficiency:
-    test_type: str    # LanguageTest enum value
+    test_type: LanguageTest
     score: float      # Test score
     valid_until: str  # ISO date string (optional)
 ```
@@ -124,8 +139,8 @@ class LanguageProficiency:
 ```python
 @dataclass
 class LanguageRequirement:
-    test_type: str    # LanguageTest enum value
-    min_score: float  # Minimum required score
+    test_type: LanguageTest
+    min_score: float    # Minimum required score
     is_mandatory: bool  # True = hard filter, False = preferred but not required
 ```
 
@@ -134,15 +149,15 @@ class LanguageRequirement:
 ```python
 @dataclass
 class FundingCoverage:
-    covers_tuition: bool        # Covers tuition fees
-    covers_living_expense: bool # Covers living expenses
-    covers_airfare: bool        # Covers airfare
-    covers_insurance: bool      # Covers insurance
-    total_amount: float         # Total USD equivalent
+    covers_tuition: bool         # Covers tuition fees
+    covers_living_expense: bool  # Covers living expenses
+    covers_airfare: bool         # Covers airfare
+    covers_insurance: bool       # Covers insurance
+    monthly_stipend: float       # Monthly stipend in local currency (0 if none)
 
     # Derived properties:
-    is_full_funding: bool       # Covers both tuition AND living
-    coverage_count: int         # Number of aspects covered (0-4)
+    is_full_funding: bool        # Covers both tuition AND living
+    coverage_count: int          # Number of aspects covered (0-4)
 ```
 
 ### SelectionCriteria
@@ -150,11 +165,11 @@ class FundingCoverage:
 ```python
 @dataclass
 class SelectionCriteria:
-    academic: float          # Weight for academic excellence (0-1, normalized)
-    leadership: float        # Weight for leadership experience
-    research: float          # Weight for research orientation
-    extracurricular: float   # Weight for extracurricular activities
-    essay: float             # Weight for essay/motivation
+    academic: float        # Weight for academic excellence (0-1, normalized)
+    leadership: float      # Weight for leadership experience
+    olympiad: float        # Weight for olympiad / competition achievement
+    extracurricular: float # Weight for extracurricular activities
+    essay: float           # Weight for essay/motivation
 
     # Note: All weights sum to 1.0
 ```
@@ -164,11 +179,11 @@ class SelectionCriteria:
 ```python
 @dataclass
 class Pair:
-    student_id: str          # Student identifier
-    scholarship_id: str      # Scholarship identifier
-    label: int               # 1 = positive (eligible), 0 = negative
-    relevance_score: float   # 0.0-1.0 soft relevance for ranking loss
-    timestamp: str           # ISO datetime for time-based splitting
+    student_id: str         # Student identifier
+    scholarship_id: str     # Scholarship identifier
+    label: int              # 1 = positive (eligible), 0 = negative
+    relevance_score: float  # 0.0-1.0 soft relevance for ranking loss
+    timestamp: str          # ISO datetime for time-based splitting
 ```
 
 ### Feedback
@@ -176,13 +191,13 @@ class Pair:
 ```python
 @dataclass
 class Feedback:
-    student_id: str          # Student identifier
-    scholarship_id: str      # Scholarship identifier
-    feedback_type: str       # "apply" | "click" | "view" | "reject"
-    timestamp: str           # ISO datetime
+    student_id: str       # Student identifier
+    scholarship_id: str   # Scholarship identifier
+    feedback_type: str    # "apply" | "click" | "view" | "reject"
+    timestamp: str        # ISO datetime
 
     # Derived property:
-    weight: float            # Training weight (see table below)
+    weight: float         # Training weight (see table below)
 ```
 
 ---
@@ -193,10 +208,102 @@ class Feedback:
 
 | Value | Description |
 |-------|-------------|
-| `SMA` | Indonesian high school |
-| `S1` | Bachelor's degree |
-| `S2` | Master's degree |
-| `S3` | PhD/Doctorate |
+| `high_school` | High school |
+| `bachelors` | Bachelor's degree |
+
+### Country
+
+| Value | Country |
+|-------|---------|
+| `china` | China |
+| `india` | India |
+| `indonesia` | Indonesia |
+| `japan` | Japan |
+| `malaysia` | Malaysia |
+| `philippines` | Philippines |
+| `singapore` | Singapore |
+| `south_korea` | South Korea |
+| `thailand` | Thailand |
+| `vietnam` | Vietnam |
+| `france` | France |
+| `germany` | Germany |
+| `netherlands` | Netherlands |
+| `sweden` | Sweden |
+| `uk` | United Kingdom |
+| `switzerland` | Switzerland |
+| `canada` | Canada |
+| `usa` | United States |
+| `argentina` | Argentina |
+| `brazil` | Brazil |
+| `chile` | Chile |
+| `egypt` | Egypt |
+| `kenya` | Kenya |
+| `morocco` | Morocco |
+| `nigeria` | Nigeria |
+| `south_africa` | South Africa |
+| `australia` | Australia |
+| `new_zealand` | New Zealand |
+
+### HighSchoolTrack
+
+| Value | Description |
+|-------|-------------|
+| `science` | Science track (Physics, Chemistry, Biology) |
+| `social_studies` | Social Studies track (Economics, Geography, Sociology) |
+| `languages` | Languages & Literature track |
+| `religion` | Religious studies track |
+| `vocational` | Vocational track |
+
+### OlympiadLevel
+
+| Value | Description |
+|-------|-------------|
+| `none` | Never competed |
+| `school` | School-level (intra-school) |
+| `city` | City / district level |
+| `provincial` | Provincial level |
+| `national` | National level |
+| `international` | International (IMO, IPhO, IOI, etc.) |
+
+### OlympiadSubject
+
+| Value | Description |
+|-------|-------------|
+| `mathematics` | Mathematics olympiad |
+| `physics` | Physics olympiad |
+| `chemistry` | Chemistry olympiad |
+| `biology` | Biology olympiad |
+| `economics` | Economics olympiad |
+| `geography` | Geography olympiad |
+| `computer_science` | Computer science olympiad |
+| `linguistics` | Linguistics olympiad |
+| `astronomy` | Astronomy olympiad |
+| `informatics` | Informatics olympiad |
+| `history` | History olympiad |
+| `english_language` | English language olympiad |
+| `business_studies` | Business studies olympiad |
+
+### IncomeCategory
+
+| Value | Description |
+|-------|-------------|
+| `very_low` | Very low income |
+| `low` | Low income |
+| `middle` | Middle income |
+| `upper_middle` | Upper middle income |
+| `high` | High income |
+
+### SchoolTier
+
+| Value | Description |
+|-------|-------------|
+| `excellence` | Top-tier / boarding school |
+| `public_a` | Public school, accredited A |
+| `private_a` | Private school, accredited A |
+| `accredited_b` | Public or private, accredited B |
+| `accredited_c` | Accredited C schools |
+| `unaccredited` | Not yet accredited |
+| `unknown` | Accreditation status unknown |
 
 ### MajorField
 
@@ -238,7 +345,6 @@ class Feedback:
 | `jlpt` | JLPT (Japanese) |
 | `delf` | DELF (French) |
 | `hsk` | HSK (Chinese) |
-| `gre` | GRE (Graduate entrance) |
 
 ### HostRegion
 
@@ -250,15 +356,6 @@ class Feedback:
 | `south_america` | South America |
 | `africa` | Africa |
 | `oceania` | Oceania |
-
-### UniversityTier
-
-| Value | Description |
-|-------|-------------|
-| `tier1` | Top-tier universities |
-| `tier2` | Mid-tier universities |
-| `tier3` | Lower-tier universities |
-| `other` | Other/not classified |
 
 ---
 
@@ -273,35 +370,6 @@ class Feedback:
 
 ---
 
-## Dataset Files
-
-### Approach A: Separate Pools (`generator.py`)
-
-```
-datasets/
-├── train/
-│   ├── students.csv          # 14,000 students
-│   ├── scholarships.csv      # 560 scholarships
-│   ├── pairs.csv             # ~38,000 pairs
-│   ├── positive_pairs.csv    # ~2,500 positive
-│   ├── negative_pairs.csv    # ~35,500 negative
-│   └── feedback.csv          # ~104,000 entries
-├── val/                       # Same structure (smaller)
-└── test/                     # Same structure (smaller)
-```
-
-### Approach B: Single Pool (`generator_single_pool.py`)
-
-```
-datasets_single_pool/
-├── students.csv               # 20,000 students (shared)
-├── scholarships.csv           # 800 scholarships (shared)
-├── pairs.csv                  # ALL pairs with timestamps
-└── feedback.csv               # ALL feedback with timestamps
-```
-
----
-
 ## Pipeline Architecture
 
 ```
@@ -310,10 +378,12 @@ datasets_single_pool/
 │  ─────────────────────────────────────────   │
 │  • Nationality in eligible_nationalities    │
 │  • Target degree in eligible_degree_levels  │
-│  • Age within [min_age, max_age]           │
-│  • GPA meets minimum (correct scale)        │
+│  • Age within [min_age, max_age]            │
+│  • Report card average meets minimum        │
+│  • Major subject average meets minimum      │
 │  • Mandatory language requirements met      │
 │  • Return-home willingness check            │
+│  • Financial need check (if required)       │
 │                                             │
 │  Output: Eligible pairs only                │
 └──────────────────┬──────────────────────────┘
@@ -330,27 +400,16 @@ datasets_single_pool/
 └──────────────────┬──────────────────────────┘
                    ↓
 ┌─────────────────────────────────────────────┐
-│  Stage 3: TF-IDF Text Similarity (Bonus)   │
+│  Stage 3: Text Similarity (Bonus)           │
 │  ─────────────────────────────────────────   │
 │  • personal_statement ↔ mission_statement   │
-│  • achievements_narrative ↔ target_profile  │
+│  • achievements_narrative ↔ target_recipient_profile  │
+│  • future_goals ↔ target_recipient_profile            │
 │                                             │
 │  Output: Text bonus added to NN score       │
+│  Final score clamped to [0, 1]              │
 └──────────────────┬──────────────────────────┘
                    ↓
 ┌─────────────────────────────────────────────┐
 │  Final Ranked Recommendations per Student   │
 └─────────────────────────────────────────────┘
-```
-
----
-
-## Generation Commands
-
-```bash
-# Approach A: Separate pools per split
-python generator.py
-
-# Approach B: Single pool with time-based splitting
-python generator_single_pool.py
-```
