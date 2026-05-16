@@ -386,6 +386,8 @@ The two-tower neural network is trained as a **regression model** that predicts 
 
 **Key point**: Hard filters are NOT used during training. The model learns soft similarity from the full spectrum of pairs, including ineligible matches (high relevance_score) and eligible but poor matches (low relevance_score). This allows the NN to learn fine-grained distinctions.
 
+**Why train without hard filters?** The relevance_score target is computed purely from attribute alignment (see `generator_two_tower.py`). Hard filter constraints like nationality or age are already reflected in the score — a student from an ineligible country will naturally receive a low relevance_score. The NN learns to reproduce this soft signal, while the hard filter acts as a strict gatekeeper only at inference time.
+
 ### Inference Pipeline (Serving Recommendations)
 
 After training, the three-stage pipeline is applied at inference time to produce final ranked recommendations:
