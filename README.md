@@ -1,3 +1,5 @@
+Recent works available on alternate `dev/<username>` branches.
+
 # Scholarship.id: Two-Tower Recommendation System
 
 Recommendation system for high school students seeking bachelor's scholarships abroad. Uses a two-tower neural network with a three-stage pipeline (hard filter → NN similarity → text similarity bonus).
