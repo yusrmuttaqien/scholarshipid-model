@@ -181,8 +181,10 @@ class SelectionCriteria:
 class Pair:
     student_id: str         # Student identifier
     scholarship_id: str     # Scholarship identifier
-    label: int              # 1 = positive (eligible), 0 = negative
-    relevance_score: float  # 0.0-1.0 soft relevance for ranking loss
+    relevance_score: float  # Continuous score 0.0-1.0 (regression target)
+                            #   >=0.7 → Match
+                            #   0.3-0.7 → In-Between
+                            #   <0.3 → Not Match
     timestamp: str          # ISO datetime for time-based splitting
 ```
 
