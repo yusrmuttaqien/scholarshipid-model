@@ -7,6 +7,7 @@ datasets
 .DS_Store
 PROJECT_BRIEF.md
 SCHEMA_MIGRATION_NOTES.md
+logs
 
 # ─── Python ──────────────────────────────────────────────
 __pycache__/
