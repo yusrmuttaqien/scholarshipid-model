@@ -372,7 +372,23 @@ class Feedback:
 
 ---
 
-## Pipeline Architecture
+## Training vs Inference
+
+### Model Training (Dataset Creation)
+
+The two-tower neural network is trained as a **regression model** that predicts continuous `relevance_score` (0.0–1.0). The training dataset contains balanced pairs across three classes:
+
+| Class | Relevance Range | Description |
+|-------|-----------------|-------------|
+| **Match** | ≥ 0.7 | High alignment between student and scholarship |
+| **In-Between** | 0.3 – 0.7 | Moderate alignment, borderline cases |
+| **Not Match** | < 0.3 | Low alignment between student and scholarship |
+
+**Key point**: Hard filters are NOT used during training. The model learns soft similarity from the full spectrum of pairs — including ineligible matches (high relevance_score) and eligible but poor matches (low relevance_score). This allows the NN to learn fine-grained distinctions.
+
+### Inference Pipeline (Serving Recommendations)
+
+After training, the three-stage pipeline is applied at inference time to produce final ranked recommendations:
 
 ```
 ┌─────────────────────────────────────────────┐
@@ -387,7 +403,7 @@ class Feedback:
 │  • Return-home willingness check            │
 │  • Financial need check (if required)       │
 │                                             │
-│  Output: Eligible pairs only                │
+│  Output: Eligible scholarships only         │
 └──────────────────┬──────────────────────────┘
                    ↓
 ┌─────────────────────────────────────────────┐
