@@ -194,6 +194,7 @@ project/
 - `EarlyStopping(monitor="val_loss", patience=5, min_delta=0.001, restore_best_weights=True)`
 - `ReduceLROnPlateau(monitor="val_loss", factor=0.5, patience=3, min_lr=1e-6)`
 - `ClassDistributionCallback()` — Per-class metrics tracking
+- `TensorBoard(log_dir="./logs")` — Training monitoring and visualization (Side Quest)
 
 **Expected Training Output:**
 ```
@@ -207,9 +208,14 @@ Epoch 12/50: loss=0.04, val_loss=0.05, mse=0.04  ← EarlyStopping triggers
 Restoring best model weights.
 ```
 
-**Performance Targets (from POINTS_TO_REMEMBER.md):**
+**Performance Targets (Official Checklist):**
 - Accuracy ≥ 85% (binary threshold at 0.5)
-- MAE ≤ 0.10 on validation set
+- MAE ≤ 0.02 on validation set
+
+**Note:** The MAE target of 0.02 is strict. Use iterative tuning:
+1. First achieve MAE ≤ 0.10 (baseline model)
+2. Reduce to MAE ≤ 0.05 by tuning learning rate and embedding dimensions
+3. Push to MAE ≤ 0.02 with more epochs, finer learning rate, or deeper towers
 
 ### 5. Evaluation Criteria
 
@@ -218,10 +224,10 @@ After training, evaluate on the held-out test set:
 | Metric | Target |
 |--------|--------|
 | Overall RMSE | ≤ 0.15 |
-| Overall MAE | ≤ 0.10 |
-| Per-class MAE (Match) | ≤ 0.12 |
-| Per-class MAE (In-Between) | ≤ 0.15 |
-| Per-class MAE (Not Match) | ≤ 0.10 |
+| Overall MAE | ≤ 0.02 |
+| Per-class MAE (Match) | ≤ 0.02 |
+| Per-class MAE (In-Between) | ≤ 0.03 |
+| Per-class MAE (Not Match) | ≤ 0.02 |
 
 **Calibration Check:** Plot predicted vs actual scores. Points should cluster near the diagonal line y=x. Systematic deviation in one direction indicates poor calibration.
 
@@ -272,7 +278,30 @@ Apply TF-IDF text similarity as a bonus to the NN score.
 
 **Final Output:** Top-K recommendations ranked by final score.
 
-### 7. Feedback Loop (`feedback.py`)
+### 7. Save Model (Main Quest Requirement)
+
+After training, save the model in TensorFlow `.keras` format for production use.
+
+```python
+# In train.py, after training completes:
+model.save("two_tower_model.keras")
+print("Model saved to two_tower_model.keras")
+```
+
+**Loading the saved model:**
+```python
+from model import CosineSimilarity, WeightedMSE
+
+loaded_model = keras.models.load_model(
+    "two_tower_model.keras",
+    custom_objects={
+        "CosineSimilarity": CosineSimilarity,
+        "WeightedMSE": WeightedMSE,
+    }
+)
+```
+
+### 8. Feedback Loop (`feedback.py`)
 
 **Purpose:** Capture student feedback and prepare data for model retraining.
 

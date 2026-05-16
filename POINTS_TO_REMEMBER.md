@@ -27,4 +27,9 @@
 
 ## Performance Targets
 - Model accuracy ≥ 85% (binary classification threshold at 0.5).
-- MAE ≤ 0.10 on validation set.
+- MAE ≤ 0.02 on validation set.
+
+**Note:** The 0.02 MAE target is strict. Use iterative tuning:
+1. First achieve MAE ≤ 0.10 (baseline model)
+2. Reduce to MAE ≤ 0.05 by tuning learning rate and embedding dimensions
+3. Push to MAE ≤ 0.02 with more epochs, finer learning rate, or deeper towers
