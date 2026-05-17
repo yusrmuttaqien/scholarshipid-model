@@ -45,9 +45,9 @@ class FundingCoverage:
 
 @dataclass
 class SelectionCriteria:
-    academic: float = 0.3
+    academic: float = 0.2
     leadership: float = 0.15
-    olympiad: float = 0.2
+    olympiad: float = 0.3
     extracurricular: float = 0.15
     essay: float = 0.2
 

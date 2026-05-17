@@ -1,19 +1,25 @@
 """Two-Tower Recommendation System - Dataset Generator
 
 Loads real scholarship data directly from src/data/scholarships.py,
-then generates synthetic students, balanced pairs, and implicit feedback.
+then generates synthetic students, realistic pairs, and implicit feedback.
 
 Output structure:
     datasets_two_tower/
     ├── scholarships.csv      # produced by generate_scholarships()
     ├── students.csv          # 20,000 synthetic students
-    ├── pairs.csv             # Balanced pairs with continuous relevance_score
+    ├── pairs.csv             # Pairs with continuous relevance_score
     └── feedback.csv          # Implicit feedback for retraining
 
-Pair categories (balanced):
-    - Match:        relevance_score ~0.8-1.0 (strong alignment)
-    - In-Between:   relevance_score ~0.3-0.6 (partial alignment)
-    - Not Match:    relevance_score ~0.0-0.2 (no alignment)
+Relevance bands:
+    - Match (>=0.7):       strong attribute alignment (~2% of random pairs)
+    - In-Between (0.3-0.7): partial alignment (~18% of random pairs)
+    - Not Match (<0.3):    eligibility knockout or no alignment (~80%)
+
+Scoring uses a 5-stage pipeline that leverages every student & scholarship
+feature in the schemas: hard eligibility gating → component scores
+(academic, olympiad, leadership, extracurricular, essay) → per-scholarship
+selection_criteria weighting → lateral fit bonuses (track, field, location,
+career, school tier, funding) → diversity boost + small noise.
 """
 
 import json
@@ -57,13 +63,9 @@ from src.schemas import (
 class TwoTowerDatasetGenerator:
     """Generate synthetic datasets for two-tower recommendation system.
 
-    Produces balanced pairs with continuous relevance scores (0.0-1.0)
-    for regression training.
-
-    Pair categories:
-        - Match:       relevance ~0.8-1.0 (strong attribute alignment)
-        - In-Between:  relevance ~0.3-0.6 (partial alignment)
-        - Not Match:   relevance ~0.0-0.2 (no alignment)
+    Produces pairs with continuous relevance scores (0.0-1.0) for
+    regression training. Distribution reflects real-world scholarship
+    matching: most random pairs are knockouts, few are strong matches.
     """
 
     def __init__(
@@ -403,66 +405,170 @@ class TwoTowerDatasetGenerator:
             can_self_fund_living=can_self_fund_living,
         )
 
-    def compute_relevance_score(
+    # ------------------------------------------------------------
+    # Relevance scoring (5-stage pipeline)
+    # ------------------------------------------------------------
+
+    _INCOME_ORDER = ["very_low", "low", "middle", "upper_middle", "high"]
+    _TIER_ORDER = [
+        "excellence",
+        "public_a",
+        "private_a",
+        "accredited_b",
+        "accredited_c",
+        "unaccredited",
+        "unknown",
+    ]
+    _OLYMPIAD_LEVEL_SCORE = {
+        # "none" is 0.30, not 0: in real selection, lack of olympiad doesn't
+        # zero-out the dimension — it's just a low-but-present signal.
+        "none": 0.30,
+        "school": 0.45,
+        "city": 0.6,
+        "provincial": 0.75,
+        "national": 0.9,
+        "international": 1.0,
+    }
+    # Olympiad subject → MajorField buckets (for cross-relevance with eligible_fields)
+    _OLYMPIAD_TO_FIELDS = {
+        "mathematics": {"mathematics", "computer_science", "engineering", "physics", "economics"},
+        "physics": {"physics", "engineering", "mathematics"},
+        "chemistry": {"chemistry", "medicine", "biology", "engineering"},
+        "biology": {"biology", "medicine", "agriculture"},
+        "economics": {"economics", "business", "social_sciences"},
+        "geography": {"social_sciences", "agriculture"},
+        "computer_science": {"computer_science", "engineering", "mathematics"},
+        "informatics": {"computer_science", "engineering", "mathematics"},
+        "linguistics": {"arts_humanities", "education"},
+        "astronomy": {"physics", "mathematics"},
+        "history": {"arts_humanities", "social_sciences", "education"},
+        "english_language": {"arts_humanities", "education"},
+        "business_studies": {"business", "economics"},
+    }
+
+    def _compute_eligibility_multiplier(
         self, student: Student, scholarship: Scholarship
     ) -> float:
-        """Compute continuous relevance score (0.0-1.0) based on attribute alignment.
+        """Stage 1: hard knockouts. 0.0 = totally ineligible."""
+        mult = 1.0
 
-        This is the TARGET value for regression training.
-        Higher score = stronger match between student and scholarship.
+        # Nationality: absolute knockout
+        if student.nationality not in scholarship.eligible_nationalities:
+            return 0.0
+
+        # Degree level: hard
+        if (
+            student.current_degree_level not in scholarship.eligible_degree_levels
+            and student.target_degree_level not in scholarship.eligible_degree_levels
+        ):
+            return 0.0
+
+        # Age: hard with off-by-one grace
+        if (
+            student.age < scholarship.min_age - 1
+            or student.age > scholarship.max_age + 1
+        ):
+            return 0.0
+        if not (scholarship.min_age <= student.age <= scholarship.max_age):
+            mult *= 0.5
+
+        # Mandatory language: knockout if test missing or score below min
+        for req in scholarship.language_requirements:
+            if not req.is_mandatory:
+                continue
+            student_scores = [
+                lp.score
+                for lp in student.language_proficiency
+                if lp.test_type == req.test_type
+            ]
+            if not student_scores or max(student_scores) < req.min_score:
+                return 0.0
+
+        # Financial need ceiling: knockout if income exceeds allowed cap
+        if scholarship.requires_financial_need:
+            try:
+                max_idx = self._INCOME_ORDER.index(scholarship.max_family_income_category)
+                student_idx = self._INCOME_ORDER.index(student.family_income_category)
+                if student_idx > max_idx:
+                    return 0.0
+            except ValueError:
+                pass
+
+        # Return-home requirement: soft penalty (not absolute, but very strong)
+        if scholarship.requires_return_home_country and not student.willing_to_return_home:
+            mult *= 0.5
+
+        return mult
+
+    @staticmethod
+    def _score_academic(student: Student, scholarship: Scholarship) -> float:
+        """Composite academic score using overall, major, math, english vs minimums."""
+        def margin(score: float, minimum: float) -> float:
+            if score >= minimum:
+                # Reward headroom but saturate at +20 above min
+                return min(0.7 + (score - minimum) / 20.0 * 0.3, 1.0)
+            deficit = (minimum - score) / 20.0
+            return max(0.7 - deficit * 0.7, 0.0)
+
+        overall = margin(student.overall_report_card_average, scholarship.min_report_card_average)
+        major = margin(student.major_subject_average, scholarship.min_major_subject_average)
+        # math/english as auxiliary signals (use min as proxy threshold)
+        math = margin(student.math_score, scholarship.min_major_subject_average)
+        english = margin(student.english_score, scholarship.min_report_card_average)
+        return 0.35 * overall + 0.35 * major + 0.15 * math + 0.15 * english
+
+    def _score_olympiad(self, student: Student, scholarship: Scholarship) -> float:
+        """Olympiad level × relevance of subjects to scholarship's eligible fields."""
+        level_score = self._OLYMPIAD_LEVEL_SCORE.get(student.olympiad_level, 0.0)
+        if level_score == 0.0 or not student.olympiad_subjects:
+            return level_score  # 0 for none; level w/o subjects gets baseline
+
+        eligible_fields = set(scholarship.eligible_fields)
+        if not eligible_fields:
+            return level_score * 0.6  # generic
+
+        # Subject relevance: fraction of subjects mapping into eligible fields
+        relevant = 0
+        for subj in student.olympiad_subjects:
+            mapped = self._OLYMPIAD_TO_FIELDS.get(subj, set())
+            if mapped & eligible_fields:
+                relevant += 1
+        subj_relevance = relevant / len(student.olympiad_subjects)
+        # 50% baseline + 50% subject-aware so even off-topic olympiad gets some credit
+        return level_score * (0.5 + 0.5 * subj_relevance)
+
+    @staticmethod
+    def _score_leadership(student: Student) -> float:
+        """Saturating function over leadership_experience_count.
+
+        0→0.25 (baseline — most students have some leadership signal),
+        1→0.55, 2→0.73, 3→0.84, 4→0.90, 5+→saturates ~1.0
         """
+        n = max(student.leadership_experience_count, 0)
+        return min(1.0, 0.25 + 0.75 * (1.0 - (0.6 ** n)))
+
+    @staticmethod
+    def _score_extracurricular(student: Student) -> float:
+        """Composite of volunteer experience + competition wins (with baselines)."""
+        v = max(student.volunteer_experience_count, 0)
+        c = max(student.competition_wins_count, 0)
+        vol = min(1.0, 0.25 + 0.75 * (1.0 - (0.65 ** v)))
+        comp = min(1.0, 0.20 + 0.80 * (1.0 - (0.55 ** c)))
+        return 0.6 * vol + 0.4 * comp
+
+    def _score_essay_placeholder(self) -> float:
+        """Stub: text-similarity needs embeddings. Mild-optimistic 0.6 + noise.
+
+        For eligible pairs (the only ones essay actually weighs in for),
+        average admissible essays score around 0.5–0.7.
+        """
+        return float(np.clip(0.6 + self.rng.normal(0, 0.08), 0.0, 1.0))
+
+    def _score_language_bonus(self, student: Student, scholarship: Scholarship) -> float:
+        """Language requirement: non-knockout portion (mandatory already gated in Stage 1)."""
+        if not scholarship.language_requirements:
+            return 1.0
         scores = []
-        weights = []
-
-        # 1. Nationality match (weight: 0.20)
-        if student.nationality in scholarship.eligible_nationalities:
-            scores.append(1.0)
-        else:
-            scores.append(0.0)
-        weights.append(0.20)
-
-        # 2. Age compatibility (weight: 0.10)
-        if scholarship.min_age <= student.age <= scholarship.max_age:
-            scores.append(1.0)
-        else:
-            scores.append(0.0)
-        weights.append(0.10)
-
-        # 3. High school track match (weight: 0.15)
-        if student.high_school_track in scholarship.eligible_high_school_tracks:
-            scores.append(1.0)
-        else:
-            scores.append(0.1)  # Partial - some scholarships accept multiple tracks
-        weights.append(0.15)
-
-        # 4. Report card average margin (weight: 0.10)
-        if student.overall_report_card_average >= scholarship.min_report_card_average:
-            margin = min(
-                (student.overall_report_card_average - scholarship.min_report_card_average)
-                / 30.0,
-                1.0,
-            )
-            scores.append(max(margin, 0.0))
-        else:
-            deficit = (scholarship.min_report_card_average - student.overall_report_card_average) / 50.0
-            scores.append(max(1.0 - deficit, 0.0))
-        weights.append(0.10)
-
-        # 5. Major subject average margin (weight: 0.10)
-        if student.major_subject_average >= scholarship.min_major_subject_average:
-            margin = min(
-                (student.major_subject_average - scholarship.min_major_subject_average)
-                / 30.0,
-                1.0,
-            )
-            scores.append(max(margin, 0.0))
-        else:
-            deficit = (scholarship.min_major_subject_average - student.major_subject_average) / 50.0
-            scores.append(max(1.0 - deficit, 0.0))
-        weights.append(0.10)
-
-        # 6. Language requirement match (weight: 0.10)
-        lang_score = 1.0
         for req in scholarship.language_requirements:
             student_scores = [
                 lp.score
@@ -471,41 +577,205 @@ class TwoTowerDatasetGenerator:
             ]
             if student_scores:
                 max_s = max(student_scores)
-                if max_s >= req.min_score:
-                    lang_score = min(lang_score, 1.0)
+                if req.min_score > 0:
+                    scores.append(min(1.0, max_s / req.min_score))
                 else:
-                    lang_score = min(lang_score, max_s / req.min_score if req.min_score > 0 else 0.0)
-            elif req.is_mandatory:
-                lang_score *= 0.0
-        scores.append(lang_score)
-        weights.append(0.10)
-
-        # 7. Return home compatibility (weight: 0.05)
-        if scholarship.requires_return_home_country:
-            scores.append(1.0 if student.willing_to_return_home else 0.0)
-        else:
-            scores.append(1.0)
-        weights.append(0.05)
-
-        # 8. Financial need compatibility (weight: 0.05)
-        if scholarship.requires_financial_need:
-            income_order = ["very_low", "low", "middle", "upper_middle", "high"]
-            if student.family_income_category in income_order[:2]:
-                scores.append(1.0)
-            elif student.family_income_category == "middle":
+                    scores.append(1.0)
+            elif not req.is_mandatory:
+                # Optional req not taken: mild penalty
                 scores.append(0.5)
-            else:
-                scores.append(0.0)
+        return sum(scores) / len(scores) if scores else 1.0
+
+    def _compute_fit_bonuses(
+        self, student: Student, scholarship: Scholarship
+    ) -> float:
+        """Stage 4: lateral preferences. Returns weighted average 0–1."""
+
+        # Track fit
+        if student.high_school_track in scholarship.eligible_high_school_tracks:
+            track_fit = 1.0
         else:
-            scores.append(1.0)
-        weights.append(0.05)
+            track_fit = 0.3
 
-        # Weighted average
-        weighted_sum = sum(s * w for s, w in zip(scores, weights))
-        total_weight = sum(weights)
-        relevance = round(weighted_sum / total_weight, 4)
+        # Field fit (proxy via olympiad subjects)
+        eligible_fields = set(scholarship.eligible_fields)
+        if not eligible_fields or not student.olympiad_subjects:
+            field_fit = 0.5  # neutral when no signal
+        else:
+            mapped_fields: set = set()
+            for subj in student.olympiad_subjects:
+                mapped_fields |= self._OLYMPIAD_TO_FIELDS.get(subj, set())
+            if mapped_fields & eligible_fields:
+                field_fit = 1.0
+            elif mapped_fields:
+                field_fit = 0.3
+            else:
+                field_fit = 0.5
 
-        return max(0.0, min(1.0, relevance))
+        # Location fit: host_country in target_countries (strong), else region match
+        if scholarship.host_country and scholarship.host_country in student.target_countries:
+            loc_fit = 1.0
+        elif scholarship.host_region:
+            student_target_regions = {
+                self.host_countries_by_region_lookup(c) for c in student.target_countries
+            }
+            student_target_regions.discard(None)
+            if scholarship.host_region in student_target_regions:
+                loc_fit = 0.6
+            else:
+                loc_fit = 0.2
+        else:
+            loc_fit = 0.5
+
+        # Career fit
+        if not scholarship.career_track_preference:
+            career_fit = 0.6  # no preference → neutral-positive
+        elif student.intended_career_track == scholarship.career_track_preference:
+            career_fit = 1.0
+        else:
+            career_fit = 0.4
+
+        # School tier fit (ordinal distance)
+        try:
+            pref_idx = self._TIER_ORDER.index(scholarship.preferred_school_tier)
+            stu_idx = self._TIER_ORDER.index(student.school_tier)
+            # Same/better tier = full credit; each step worse = -0.15
+            if stu_idx <= pref_idx:
+                tier_fit = 1.0
+            else:
+                tier_fit = max(0.2, 1.0 - 0.15 * (stu_idx - pref_idx))
+        except ValueError:
+            tier_fit = 0.6
+
+        # Funding fit
+        is_full = scholarship.funding_coverage.is_full_funding
+        if student.needs_full_funding:
+            fund_fit = 1.0 if is_full else 0.3
+        elif student.can_self_fund_living:
+            # Self-funded student: any scholarship works; full-funding still bonus
+            fund_fit = 0.9 if is_full else 0.8
+        else:
+            fund_fit = 0.7 if is_full else 0.6
+
+        return (
+            0.20 * track_fit
+            + 0.18 * field_fit
+            + 0.18 * loc_fit
+            + 0.14 * career_fit
+            + 0.10 * tier_fit
+            + 0.20 * fund_fit
+        )
+
+    def host_countries_by_region_lookup(self, country: str):
+        """Reverse-lookup region from country (uses host_countries_by_region map)."""
+        for region, countries in self.host_countries_by_region.items():
+            if country in countries:
+                return region
+        return None
+
+    def compute_relevance_score(
+        self, student: Student, scholarship: Scholarship
+    ) -> float:
+        """Compute continuous relevance score (0.0-1.0) for two-tower regression.
+
+        5-stage pipeline:
+          1. Hard eligibility gating (nationality, degree, age, mandatory lang, income ceiling)
+          2. Component scores (academic, olympiad, leadership, extracurricular, essay)
+          3. Core score = sum(selection_criteria.X * component_X) — per-scholarship weights
+          4. Fit bonuses (track, field, location, career, school tier, funding)
+          5. Combine + diversity boost + small noise, then gate by eligibility multiplier
+        """
+        # Stage 1: hard eligibility
+        elig = self._compute_eligibility_multiplier(student, scholarship)
+        if elig == 0.0:
+            # Even fully ineligible pairs get tiny noise so the model sees some
+            # variance at the low end, but stay well below the In-Between threshold.
+            return float(np.clip(self.rng.uniform(0.0, 0.05), 0.0, 1.0))
+
+        # Stage 2: component scores
+        acad = self._score_academic(student, scholarship)
+        oly = self._score_olympiad(student, scholarship)
+        lead = self._score_leadership(student)
+        extra = self._score_extracurricular(student)
+        essay = self._score_essay_placeholder()
+
+        # Stage 3: per-scholarship selection_criteria weighting (already sums to ~1.0)
+        sc = scholarship.selection_criteria
+        core = (
+            sc.academic * acad
+            + sc.olympiad * oly
+            + sc.leadership * lead
+            + sc.extracurricular * extra
+            + sc.essay * essay
+        )
+
+        # Stage 4: fit bonuses + language non-knockout signal
+        fit = self._compute_fit_bonuses(student, scholarship)
+        lang_bonus = self._score_language_bonus(student, scholarship)
+
+        # Stage 5: combine
+        base = 0.55 * core + 0.35 * fit + 0.10 * lang_bonus
+
+        # Diversity boost: underrepresented students for scholarships that favor them
+        favors_diversity = (
+            scholarship.requires_financial_need
+            or scholarship.host_country in {"japan", "south_korea", "uk", "usa", "australia"}
+        )
+        if student.from_underrepresented_region and favors_diversity:
+            base = min(1.0, base + 0.05)
+
+        # Apply eligibility multiplier (1.0 normally, 0.3 for grace-zone violations)
+        relevance = base * elig
+
+        # Small realistic noise
+        relevance = float(np.clip(relevance + self.rng.normal(0, 0.02), 0.0, 1.0))
+
+        return round(relevance, 4)
+
+    def _debug_distribution(
+        self,
+        students: List[Student],
+        scholarships: List[Scholarship],
+        sample_students: int = 50,
+    ) -> None:
+        """Pre-generate sanity check: print histogram of relevance scores.
+
+        Samples N students × all scholarships, prints 10-bin histogram so we
+        can verify In-Between band (0.3–0.7) is not collapsed before committing
+        to full 800k-pair generation.
+        """
+        print("\n  [Distribution check] Sampling "
+              f"{sample_students} students × {len(scholarships)} scholarships...")
+        n = min(sample_students, len(students))
+        sampled = self.prng.sample(students, n)
+        scores = [
+            self.compute_relevance_score(s, sch)
+            for s in sampled
+            for sch in scholarships
+        ]
+        total = len(scores)
+        bins = [0] * 10  # 0.0-0.1, 0.1-0.2, ..., 0.9-1.0
+        for v in scores:
+            idx = min(int(v * 10), 9)
+            bins[idx] += 1
+
+        print(f"  [Distribution] total={total:,}, "
+              f"mean={np.mean(scores):.3f}, std={np.std(scores):.3f}")
+        max_count = max(bins) or 1
+        for i, c in enumerate(bins):
+            bar = "#" * int(40 * c / max_count)
+            lo, hi = i / 10, (i + 1) / 10
+            pct = 100.0 * c / total if total else 0.0
+            print(f"    {lo:.1f}-{hi:.1f} | {c:6,} ({pct:5.2f}%) {bar}")
+
+        match = sum(1 for v in scores if v >= 0.7)
+        inb = sum(1 for v in scores if 0.3 <= v < 0.7)
+        notm = sum(1 for v in scores if v < 0.3)
+        print(f"  [Bands] match={100*match/total:.2f}%  "
+              f"in-between={100*inb/total:.2f}%  not-match={100*notm/total:.2f}%")
+        if inb / total < 0.05:
+            print("  [WARNING] In-Between band <5% — consider tuning weights "
+                  "before full generation.")
 
     def generate_all_students(self) -> List[Student]:
         """Generate all students for the single pool."""
@@ -538,12 +808,12 @@ class TwoTowerDatasetGenerator:
             ratio_notmatch: Ratio of not-match pairs to match pairs.
         """
         base_date = datetime(2024, 1, 1)
-        student_map = {s.student_id: s for s in students}
-        schol_map = {sch.scholarship_id: sch for sch in scholarships}
 
-        # Step 1: Compute relevance for all student-scholarship combinations
-        # For efficiency, sample pairs strategically
-        print("  Computing relevance scores for candidate pairs...")
+        # Pre-generation sanity check: histogram on a small sample
+        self._debug_distribution(students, scholarships, sample_students=50)
+
+        # Step 1: Compute relevance for ALL student-scholarship combinations
+        print("\n  Computing relevance scores for all candidate pairs...")
 
         match_pairs = []
         inbetween_pairs = []
@@ -552,14 +822,10 @@ class TwoTowerDatasetGenerator:
         total_combinations = len(students) * len(scholarships)
         print(f"  Total combinations: {total_combinations:,}")
 
-        # Sample a subset for evaluation (to avoid O(N*M) computation)
-        # We sample students and compute against all scholarships
-        sample_size = min(len(students), 5000)
-        sampled_students = self.prng.sample(students, sample_size)
-
-        for idx, student in enumerate(sampled_students):
-            if idx % 500 == 0:
-                print(f"    Processing student {idx}/{sample_size}...")
+        report_every = max(1, len(students) // 20)
+        for idx, student in enumerate(students):
+            if idx % report_every == 0:
+                print(f"    Processing student {idx}/{len(students)}...")
 
             for scholarship in scholarships:
                 relevance = self.compute_relevance_score(student, scholarship)
@@ -795,7 +1061,15 @@ class TwoTowerDatasetGenerator:
 def main():
     NUM_STUDENTS = 20_000
     SEED = 42
-    TARGET_MATCH_COUNT = 250_000
+    # With the 5-stage realistic scorer, ~1.8% of random pairs land in the
+    # match band (relevance >= 0.7). For 20k students × ~40 scholarships =
+    # 800k candidate pairs, that yields ~14–16k matches. We cap at 20k and
+    # take all available, then sample 3x as many in-between / not-match pairs
+    # to keep the dataset roughly proportional to real-world distribution
+    # while still giving the model enough match examples to learn from.
+    TARGET_MATCH_COUNT = 20_000
+    RATIO_INBETWEEN = 3.0
+    RATIO_NOTMATCH = 3.0
     OUTPUT_DIR = "./datasets_two_tower"
 
     print("=" * 60)
@@ -822,8 +1096,8 @@ def main():
     pairs = generator.generate_balanced_pairs(
         students, scholarships,
         target_match_count=TARGET_MATCH_COUNT,
-        ratio_inbetween=1.0,
-        ratio_notmatch=1.0,
+        ratio_inbetween=RATIO_INBETWEEN,
+        ratio_notmatch=RATIO_NOTMATCH,
     )
 
     scores = [p.relevance_score for p in pairs]
