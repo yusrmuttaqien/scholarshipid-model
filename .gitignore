@@ -89,3 +89,5 @@ CLAUDE.md
 .agents/
 docs/agents/
 skills-lock.json
+CONTEXT.md
+docs/adr/
