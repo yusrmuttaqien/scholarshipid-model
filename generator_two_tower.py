@@ -22,15 +22,11 @@ selection_criteria weighting → lateral fit bonuses (track, field, location,
 career, school tier, funding) → diversity boost + small noise.
 """
 
-import json
-import os
 import random
-from dataclasses import asdict
 from datetime import datetime, timedelta
 from typing import Dict, List, Tuple
 
 import numpy as np
-import pandas as pd
 
 from src.data.students import (
     ALL_COUNTRIES,
@@ -56,6 +52,7 @@ from src.schemas import (
     SchoolTier,
     Student,
 )
+from src.io import save_to_csv
 from src.scorer import compute_relevance_score
 
 
@@ -478,79 +475,6 @@ class TwoTowerDatasetGenerator:
 
         return feedbacks
 
-    @staticmethod
-    def _flatten_scholarship(sch: Scholarship) -> dict:
-        """Flatten a Scholarship dataclass to a CSV-compatible dict."""
-        record = asdict(sch)
-        record["eligible_nationalities"] = json.dumps(sch.eligible_nationalities)
-        record["eligible_degree_levels"] = json.dumps(sch.eligible_degree_levels)
-        record["eligible_high_school_tracks"] = json.dumps(sch.eligible_high_school_tracks)
-        record["eligible_fields"] = json.dumps(sch.eligible_fields)
-        record["language_requirements"] = json.dumps([asdict(lr) for lr in sch.language_requirements])
-        record["selection_criteria"] = json.dumps(asdict(sch.selection_criteria))
-        fc = sch.funding_coverage
-        del record["funding_coverage"]
-        record["funding_covers_tuition"] = fc.covers_tuition
-        record["funding_covers_living"] = fc.covers_living_expense
-        record["funding_covers_airfare"] = fc.covers_airfare
-        record["funding_covers_insurance"] = fc.covers_insurance
-        record["funding_monthly_stipend"] = fc.monthly_stipend
-        record["funding_is_full_funding"] = fc.is_full_funding
-        record["funding_coverage_count"] = fc.coverage_count
-        return record
-
-    def save_to_csv(
-        self,
-        students: List[Student],
-        scholarships: List[Scholarship],
-        pairs: List[Pair],
-        feedbacks: List[Feedback],
-        output_dir: str = "./datasets_two_tower",
-    ):
-        """Save all datasets to CSV files."""
-        os.makedirs(output_dir, exist_ok=True)
-
-        # Save scholarships
-        scholarship_records = [self._flatten_scholarship(sch) for sch in scholarships]
-        pd.DataFrame(scholarship_records).to_csv(f"{output_dir}/scholarships.csv", index=False)
-
-        # Flatten student data
-        student_records = []
-        for s in students:
-            record = asdict(s)
-            record["language_proficiency"] = json.dumps(
-                [asdict(lp) for lp in s.language_proficiency]
-            )
-            record["olympiad_subjects"] = json.dumps(s.olympiad_subjects)
-            record["target_countries"] = json.dumps(s.target_countries)
-            student_records.append(record)
-
-        pair_records = [
-            {
-                "student_id": p.student_id,
-                "scholarship_id": p.scholarship_id,
-                "relevance_score": round(p.relevance_score, 4),
-                "timestamp": p.timestamp,
-            }
-            for p in pairs
-        ]
-
-        feedback_records = [
-            {
-                "student_id": f.student_id,
-                "scholarship_id": f.scholarship_id,
-                "feedback_type": f.feedback_type,
-                "weight": f.weight,
-                "timestamp": f.timestamp,
-            }
-            for f in feedbacks
-        ]
-
-        pd.DataFrame(student_records).to_csv(f"{output_dir}/students.csv", index=False)
-        pd.DataFrame(pair_records).to_csv(f"{output_dir}/pairs.csv", index=False)
-        pd.DataFrame(feedback_records).to_csv(f"{output_dir}/feedback.csv", index=False)
-
-        return output_dir
 
 
 # ============================================================
@@ -619,7 +543,7 @@ def main():
         print(f"    {fb_type}: {count:,}")
 
     # Save all datasets
-    generator.save_to_csv(students, scholarships, pairs, feedbacks, OUTPUT_DIR)
+    save_to_csv(students, scholarships, pairs, feedbacks, OUTPUT_DIR)
 
     print("\n" + "=" * 60)
     print("Dataset generation complete!")

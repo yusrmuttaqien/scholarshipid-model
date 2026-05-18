@@ -10,11 +10,10 @@ from .enums import (
     OlympiadLevel,
     OlympiadSubject,
     SchoolTier,
-    infer_career_from_fields,
-    infer_tracks_from_fields,
     normalize_country,
     normalize_field,
 )
+from .field_inference import infer_career_from_fields, infer_tracks_from_fields
 from .feedback import Feedback
 from .pair import Pair
 from .scholarship import FundingCoverage, LanguageRequirement, Scholarship, SelectionCriteria
