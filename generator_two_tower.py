@@ -27,22 +27,26 @@ import os
 import random
 from dataclasses import asdict
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Tuple
 
 import numpy as np
 import pandas as pd
 
+from src.data.students import (
+    ALL_COUNTRIES,
+    ACHIEVEMENT_TEMPLATES,
+    COUNTRIES_BY_REGION,
+    FUTURE_GOALS_TEMPLATES,
+    PERSONAL_STATEMENT_TEMPLATES,
+    RESEARCH_INTERESTS,
+    SCHOOL_NAMES,
+)
 from src.schemas import (
     CareerTrack,
-    Country,
-    DegreeLevel,
     Feedback,
-    FundingCoverage,
     HighSchoolTrack,
-    HostRegion,
     IncomeCategory,
     LanguageProficiency,
-    LanguageRequirement,
     LanguageTest,
     MajorField,
     OlympiadLevel,
@@ -50,9 +54,9 @@ from src.schemas import (
     Pair,
     Scholarship,
     SchoolTier,
-    SelectionCriteria,
     Student,
 )
+from src.scorer import compute_relevance_score
 
 
 # ============================================================
@@ -77,155 +81,13 @@ class TwoTowerDatasetGenerator:
         self.seed = seed
         self.rng = np.random.RandomState(seed)
         self.prng = random.Random(seed)
-
-        # Country groups
-        self.asian_countries = [
-            "indonesia",
-            "malaysia",
-            "thailand",
-            "philippines",
-            "vietnam",
-            "singapore",
-            "japan",
-            "south_korea",
-            "china",
-            "india",
-        ]
-        self.european_countries = [
-            "france",
-            "germany",
-            "netherlands",
-            "sweden",
-            "uk",
-            "switzerland",
-        ]
-        self.american_countries = ["canada", "usa"]
-        self.african_countries = [
-            "egypt",
-            "kenya",
-            "morocco",
-            "nigeria",
-            "south_africa",
-        ]
-        self.oceanian_countries = ["australia", "new_zealand"]
-        self.south_american_countries = ["argentina", "brazil", "chile"]
-
-        self.all_countries = (
-            self.asian_countries
-            + self.european_countries
-            + self.american_countries
-            + self.african_countries
-            + self.oceanian_countries
-            + self.south_american_countries
-        )
-
-        # Host countries by region
-        self.host_countries_by_region = {
-            "asia": self.asian_countries,
-            "europe": self.european_countries,
-            "north_america": self.american_countries,
-            "south_america": self.south_american_countries,
-            "africa": self.african_countries,
-            "oceania": self.oceanian_countries,
-        }
-
-        # School names per country
-        self.school_names = {
-            "indonesia": [
-                "SMA Negeri 1 Jakarta",
-                "SMAN 3 Surabaya",
-                "SMA Muhammadiyah 1 Bandung",
-                "SMAN 5 Medan",
-                "SMA Katolik Santa Maria Yogyakarta",
-            ],
-            "malaysia": [
-                "Sekolah Menengah Kebangsaan Kuala Lumpur",
-                "SMK Damansara",
-                "Sekolah Menengah Teknik Johor",
-            ],
-            "thailand": [
-                "Chulalongkorn Academic Division School",
-                "Suankularb Wittayalai School",
-            ],
-            "philippines": [
-                "University of the Philippines High School",
-                "Ateneo de Manila Senior High",
-            ],
-            "vietnam": [
-                "Lý Tự Trọng High School",
-                "Tuan Minh High School",
-            ],
-            "india": [
-                "Delhi Public School",
-                "Kendriya Vidyalaya",
-            ],
-            "japan": [
-                "Tokyo Metropolitan Nagatsuta High School",
-                "Bunka High School",
-            ],
-            "south_korea": [
-                "Seoul High School",
-                "Hwawon High School",
-            ],
-            "china": [
-                "Beijing No.4 High School",
-                "Shanghai High School",
-            ],
-            "singapore": [
-                "Raffles Institution",
-                "Hwa Chong Institution",
-            ],
-        }
-
-        # Text templates
-        self.personal_statement_templates = [
-            "I am passionate about {field} and aspire to make a significant contribution to {interest}.",
-            "My journey in {field} began during high school where I discovered my love for {interest}.",
-            "As a dedicated student of {track}, I have been actively involved in {activity}.",
-            "Growing up in {country}, I witnessed firsthand the challenges in {interest} and want to address them.",
-        ]
-
-        self.future_goals_templates = [
-            "After completing my studies, I plan to return home and contribute to {interest} in my community.",
-            "My long-term goal is to become a leader in {field} and drive innovation in {region}.",
-            "I aspire to establish a program focused on {interest} that benefits underrepresented communities.",
-            "I want to bridge the gap between {field} and {interest} through research and practice.",
-        ]
-
-        self.mission_statement_templates = [
-            "We seek to support outstanding students in {field} who demonstrate commitment to {goal}.",
-            "This scholarship aims to nurture future leaders in {field} with a passion for {interest}.",
-            "Our mission is to empower talented individuals from {region} pursuing excellence in {field}.",
-        ]
-
-        self.target_profile_templates = [
-            "We are looking for candidates with strong academic records and proven {activity} experience.",
-            "Ideal candidates demonstrate excellence in {field} and commitment to {goal}.",
-            "We value students who show leadership potential and dedication to {interest}.",
-        ]
-
-        self.research_interests = [
-            "artificial intelligence",
-            "machine learning",
-            "climate change mitigation",
-            "public health policy",
-            "renewable energy systems",
-            "financial technology",
-            "human-computer interaction",
-            "genomic research",
-            "education reform",
-            "sustainable agriculture",
-            "quantum computing",
-            "cybersecurity",
-        ]
-
-        self.achievement_templates = [
-            "Achieved {level} level in {subject} olympiad.",
-            "Won {competition} competition at the {level} level.",
-            "Led a team of {team_size} in a {subject} project.",
-            "Volunteered {hours} hours for community service.",
-            "Served as {position} in student council.",
-        ]
+        self.all_countries = ALL_COUNTRIES
+        self.host_countries_by_region = COUNTRIES_BY_REGION
+        self.school_names = SCHOOL_NAMES
+        self.personal_statement_templates = PERSONAL_STATEMENT_TEMPLATES
+        self.future_goals_templates = FUTURE_GOALS_TEMPLATES
+        self.research_interests = RESEARCH_INTERESTS
+        self.achievement_templates = ACHIEVEMENT_TEMPLATES
 
     def generate_scholarships(self) -> List[Scholarship]:
         """Load all hardcoded scholarships and assign sequential IDs."""
@@ -405,333 +267,6 @@ class TwoTowerDatasetGenerator:
             can_self_fund_living=can_self_fund_living,
         )
 
-    # ------------------------------------------------------------
-    # Relevance scoring (5-stage pipeline)
-    # ------------------------------------------------------------
-
-    _INCOME_ORDER = ["very_low", "low", "middle", "upper_middle", "high"]
-    _TIER_ORDER = [
-        "excellence",
-        "public_a",
-        "private_a",
-        "accredited_b",
-        "accredited_c",
-        "unaccredited",
-        "unknown",
-    ]
-    _OLYMPIAD_LEVEL_SCORE = {
-        # "none" is 0.30, not 0: in real selection, lack of olympiad doesn't
-        # zero-out the dimension — it's just a low-but-present signal.
-        "none": 0.30,
-        "school": 0.45,
-        "city": 0.6,
-        "provincial": 0.75,
-        "national": 0.9,
-        "international": 1.0,
-    }
-    # Olympiad subject → MajorField buckets (for cross-relevance with eligible_fields)
-    _OLYMPIAD_TO_FIELDS = {
-        "mathematics": {"mathematics", "computer_science", "engineering", "physics", "economics"},
-        "physics": {"physics", "engineering", "mathematics"},
-        "chemistry": {"chemistry", "medicine", "biology", "engineering"},
-        "biology": {"biology", "medicine", "agriculture"},
-        "economics": {"economics", "business", "social_sciences"},
-        "geography": {"social_sciences", "agriculture"},
-        "computer_science": {"computer_science", "engineering", "mathematics"},
-        "informatics": {"computer_science", "engineering", "mathematics"},
-        "linguistics": {"arts_humanities", "education"},
-        "astronomy": {"physics", "mathematics"},
-        "history": {"arts_humanities", "social_sciences", "education"},
-        "english_language": {"arts_humanities", "education"},
-        "business_studies": {"business", "economics"},
-    }
-
-    def _compute_eligibility_multiplier(
-        self, student: Student, scholarship: Scholarship
-    ) -> float:
-        """Stage 1: hard knockouts. 0.0 = totally ineligible."""
-        mult = 1.0
-
-        # Nationality: absolute knockout
-        if student.nationality not in scholarship.eligible_nationalities:
-            return 0.0
-
-        # Degree level: hard
-        if (
-            student.current_degree_level not in scholarship.eligible_degree_levels
-            and student.target_degree_level not in scholarship.eligible_degree_levels
-        ):
-            return 0.0
-
-        # Age: hard with off-by-one grace
-        if (
-            student.age < scholarship.min_age - 1
-            or student.age > scholarship.max_age + 1
-        ):
-            return 0.0
-        if not (scholarship.min_age <= student.age <= scholarship.max_age):
-            mult *= 0.5
-
-        # Mandatory language: knockout if test missing or score below min
-        for req in scholarship.language_requirements:
-            if not req.is_mandatory:
-                continue
-            student_scores = [
-                lp.score
-                for lp in student.language_proficiency
-                if lp.test_type == req.test_type
-            ]
-            if not student_scores or max(student_scores) < req.min_score:
-                return 0.0
-
-        # Financial need ceiling: knockout if income exceeds allowed cap
-        if scholarship.requires_financial_need:
-            try:
-                max_idx = self._INCOME_ORDER.index(scholarship.max_family_income_category)
-                student_idx = self._INCOME_ORDER.index(student.family_income_category)
-                if student_idx > max_idx:
-                    return 0.0
-            except ValueError:
-                pass
-
-        # Return-home requirement: soft penalty (not absolute, but very strong)
-        if scholarship.requires_return_home_country and not student.willing_to_return_home:
-            mult *= 0.5
-
-        return mult
-
-    @staticmethod
-    def _score_academic(student: Student, scholarship: Scholarship) -> float:
-        """Composite academic score using overall, major, math, english vs minimums."""
-        def margin(score: float, minimum: float) -> float:
-            if score >= minimum:
-                # Reward headroom but saturate at +20 above min
-                return min(0.7 + (score - minimum) / 20.0 * 0.3, 1.0)
-            deficit = (minimum - score) / 20.0
-            return max(0.7 - deficit * 0.7, 0.0)
-
-        overall = margin(student.overall_report_card_average, scholarship.min_report_card_average)
-        major = margin(student.major_subject_average, scholarship.min_major_subject_average)
-        # math/english as auxiliary signals (use min as proxy threshold)
-        math = margin(student.math_score, scholarship.min_major_subject_average)
-        english = margin(student.english_score, scholarship.min_report_card_average)
-        return 0.35 * overall + 0.35 * major + 0.15 * math + 0.15 * english
-
-    def _score_olympiad(self, student: Student, scholarship: Scholarship) -> float:
-        """Olympiad level × relevance of subjects to scholarship's eligible fields."""
-        level_score = self._OLYMPIAD_LEVEL_SCORE.get(student.olympiad_level, 0.0)
-        if level_score == 0.0 or not student.olympiad_subjects:
-            return level_score  # 0 for none; level w/o subjects gets baseline
-
-        eligible_fields = set(scholarship.eligible_fields)
-        if not eligible_fields:
-            return level_score * 0.6  # generic
-
-        # Subject relevance: fraction of subjects mapping into eligible fields
-        relevant = 0
-        for subj in student.olympiad_subjects:
-            mapped = self._OLYMPIAD_TO_FIELDS.get(subj, set())
-            if mapped & eligible_fields:
-                relevant += 1
-        subj_relevance = relevant / len(student.olympiad_subjects)
-        # 50% baseline + 50% subject-aware so even off-topic olympiad gets some credit
-        return level_score * (0.5 + 0.5 * subj_relevance)
-
-    @staticmethod
-    def _score_leadership(student: Student) -> float:
-        """Saturating function over leadership_experience_count.
-
-        0→0.25 (baseline — most students have some leadership signal),
-        1→0.55, 2→0.73, 3→0.84, 4→0.90, 5+→saturates ~1.0
-        """
-        n = max(student.leadership_experience_count, 0)
-        return min(1.0, 0.25 + 0.75 * (1.0 - (0.6 ** n)))
-
-    @staticmethod
-    def _score_extracurricular(student: Student) -> float:
-        """Composite of volunteer experience + competition wins (with baselines)."""
-        v = max(student.volunteer_experience_count, 0)
-        c = max(student.competition_wins_count, 0)
-        vol = min(1.0, 0.25 + 0.75 * (1.0 - (0.65 ** v)))
-        comp = min(1.0, 0.20 + 0.80 * (1.0 - (0.55 ** c)))
-        return 0.6 * vol + 0.4 * comp
-
-    def _score_essay_placeholder(self) -> float:
-        """Stub: text-similarity needs embeddings. Mild-optimistic 0.6 + noise.
-
-        For eligible pairs (the only ones essay actually weighs in for),
-        average admissible essays score around 0.5–0.7.
-        """
-        return float(np.clip(0.6 + self.rng.normal(0, 0.08), 0.0, 1.0))
-
-    def _score_language_bonus(self, student: Student, scholarship: Scholarship) -> float:
-        """Language requirement: non-knockout portion (mandatory already gated in Stage 1)."""
-        if not scholarship.language_requirements:
-            return 1.0
-        scores = []
-        for req in scholarship.language_requirements:
-            student_scores = [
-                lp.score
-                for lp in student.language_proficiency
-                if lp.test_type == req.test_type
-            ]
-            if student_scores:
-                max_s = max(student_scores)
-                if req.min_score > 0:
-                    scores.append(min(1.0, max_s / req.min_score))
-                else:
-                    scores.append(1.0)
-            elif not req.is_mandatory:
-                # Optional req not taken: mild penalty
-                scores.append(0.5)
-        return sum(scores) / len(scores) if scores else 1.0
-
-    def _compute_fit_bonuses(
-        self, student: Student, scholarship: Scholarship
-    ) -> float:
-        """Stage 4: lateral preferences. Returns weighted average 0–1."""
-
-        # Track fit
-        if student.high_school_track in scholarship.eligible_high_school_tracks:
-            track_fit = 1.0
-        else:
-            track_fit = 0.3
-
-        # Field fit (proxy via olympiad subjects)
-        eligible_fields = set(scholarship.eligible_fields)
-        if not eligible_fields or not student.olympiad_subjects:
-            field_fit = 0.5  # neutral when no signal
-        else:
-            mapped_fields: set = set()
-            for subj in student.olympiad_subjects:
-                mapped_fields |= self._OLYMPIAD_TO_FIELDS.get(subj, set())
-            if mapped_fields & eligible_fields:
-                field_fit = 1.0
-            elif mapped_fields:
-                field_fit = 0.3
-            else:
-                field_fit = 0.5
-
-        # Location fit: host_country in target_countries (strong), else region match
-        if scholarship.host_country and scholarship.host_country in student.target_countries:
-            loc_fit = 1.0
-        elif scholarship.host_region:
-            student_target_regions = {
-                self.host_countries_by_region_lookup(c) for c in student.target_countries
-            }
-            student_target_regions.discard(None)
-            if scholarship.host_region in student_target_regions:
-                loc_fit = 0.6
-            else:
-                loc_fit = 0.2
-        else:
-            loc_fit = 0.5
-
-        # Career fit
-        if not scholarship.career_track_preference:
-            career_fit = 0.6  # no preference → neutral-positive
-        elif student.intended_career_track == scholarship.career_track_preference:
-            career_fit = 1.0
-        else:
-            career_fit = 0.4
-
-        # School tier fit (ordinal distance)
-        try:
-            pref_idx = self._TIER_ORDER.index(scholarship.preferred_school_tier)
-            stu_idx = self._TIER_ORDER.index(student.school_tier)
-            # Same/better tier = full credit; each step worse = -0.15
-            if stu_idx <= pref_idx:
-                tier_fit = 1.0
-            else:
-                tier_fit = max(0.2, 1.0 - 0.15 * (stu_idx - pref_idx))
-        except ValueError:
-            tier_fit = 0.6
-
-        # Funding fit
-        is_full = scholarship.funding_coverage.is_full_funding
-        if student.needs_full_funding:
-            fund_fit = 1.0 if is_full else 0.3
-        elif student.can_self_fund_living:
-            # Self-funded student: any scholarship works; full-funding still bonus
-            fund_fit = 0.9 if is_full else 0.8
-        else:
-            fund_fit = 0.7 if is_full else 0.6
-
-        return (
-            0.20 * track_fit
-            + 0.18 * field_fit
-            + 0.18 * loc_fit
-            + 0.14 * career_fit
-            + 0.10 * tier_fit
-            + 0.20 * fund_fit
-        )
-
-    def host_countries_by_region_lookup(self, country: str):
-        """Reverse-lookup region from country (uses host_countries_by_region map)."""
-        for region, countries in self.host_countries_by_region.items():
-            if country in countries:
-                return region
-        return None
-
-    def compute_relevance_score(
-        self, student: Student, scholarship: Scholarship
-    ) -> float:
-        """Compute continuous relevance score (0.0-1.0) for two-tower regression.
-
-        5-stage pipeline:
-          1. Hard eligibility gating (nationality, degree, age, mandatory lang, income ceiling)
-          2. Component scores (academic, olympiad, leadership, extracurricular, essay)
-          3. Core score = sum(selection_criteria.X * component_X) — per-scholarship weights
-          4. Fit bonuses (track, field, location, career, school tier, funding)
-          5. Combine + diversity boost + small noise, then gate by eligibility multiplier
-        """
-        # Stage 1: hard eligibility
-        elig = self._compute_eligibility_multiplier(student, scholarship)
-        if elig == 0.0:
-            # Even fully ineligible pairs get tiny noise so the model sees some
-            # variance at the low end, but stay well below the In-Between threshold.
-            return float(np.clip(self.rng.uniform(0.0, 0.05), 0.0, 1.0))
-
-        # Stage 2: component scores
-        acad = self._score_academic(student, scholarship)
-        oly = self._score_olympiad(student, scholarship)
-        lead = self._score_leadership(student)
-        extra = self._score_extracurricular(student)
-        essay = self._score_essay_placeholder()
-
-        # Stage 3: per-scholarship selection_criteria weighting (already sums to ~1.0)
-        sc = scholarship.selection_criteria
-        core = (
-            sc.academic * acad
-            + sc.olympiad * oly
-            + sc.leadership * lead
-            + sc.extracurricular * extra
-            + sc.essay * essay
-        )
-
-        # Stage 4: fit bonuses + language non-knockout signal
-        fit = self._compute_fit_bonuses(student, scholarship)
-        lang_bonus = self._score_language_bonus(student, scholarship)
-
-        # Stage 5: combine
-        base = 0.55 * core + 0.35 * fit + 0.10 * lang_bonus
-
-        # Diversity boost: underrepresented students for scholarships that favor them
-        favors_diversity = (
-            scholarship.requires_financial_need
-            or scholarship.host_country in {"japan", "south_korea", "uk", "usa", "australia"}
-        )
-        if student.from_underrepresented_region and favors_diversity:
-            base = min(1.0, base + 0.05)
-
-        # Apply eligibility multiplier (1.0 normally, 0.3 for grace-zone violations)
-        relevance = base * elig
-
-        # Small realistic noise
-        relevance = float(np.clip(relevance + self.rng.normal(0, 0.02), 0.0, 1.0))
-
-        return round(relevance, 4)
-
     def _debug_distribution(
         self,
         students: List[Student],
@@ -749,7 +284,7 @@ class TwoTowerDatasetGenerator:
         n = min(sample_students, len(students))
         sampled = self.prng.sample(students, n)
         scores = [
-            self.compute_relevance_score(s, sch)
+            compute_relevance_score(s, sch, self.rng, self.host_countries_by_region)
             for s in sampled
             for sch in scholarships
         ]
@@ -828,7 +363,7 @@ class TwoTowerDatasetGenerator:
                 print(f"    Processing student {idx}/{len(students)}...")
 
             for scholarship in scholarships:
-                relevance = self.compute_relevance_score(student, scholarship)
+                relevance = compute_relevance_score(student, scholarship, self.rng, self.host_countries_by_region)
 
                 pair_record = (student.student_id, scholarship.scholarship_id, relevance)
 
@@ -854,38 +389,7 @@ class TwoTowerDatasetGenerator:
 
         # Step 3: Build Pair records with timestamps
         all_pairs = []
-
-        for sid, schid, relevance in final_match:
-            offset_days = self.rng.randint(0, 365)
-            offset_hours = self.rng.randint(0, 23)
-            timestamp = (
-                base_date + timedelta(days=offset_days, hours=offset_hours)
-            ).strftime("%Y-%m-%dT%H:%M:%SZ")
-            all_pairs.append(
-                Pair(
-                    student_id=sid,
-                    scholarship_id=schid,
-                    relevance_score=relevance,
-                    timestamp=timestamp,
-                )
-            )
-
-        for sid, schid, relevance in final_inbetween:
-            offset_days = self.rng.randint(0, 365)
-            offset_hours = self.rng.randint(0, 23)
-            timestamp = (
-                base_date + timedelta(days=offset_days, hours=offset_hours)
-            ).strftime("%Y-%m-%dT%H:%M:%SZ")
-            all_pairs.append(
-                Pair(
-                    student_id=sid,
-                    scholarship_id=schid,
-                    relevance_score=relevance,
-                    timestamp=timestamp,
-                )
-            )
-
-        for sid, schid, relevance in final_notmatch:
+        for sid, schid, relevance in final_match + final_inbetween + final_notmatch:
             offset_days = self.rng.randint(0, 365)
             offset_hours = self.rng.randint(0, 23)
             timestamp = (
@@ -1021,30 +525,26 @@ class TwoTowerDatasetGenerator:
             record["target_countries"] = json.dumps(s.target_countries)
             student_records.append(record)
 
-        # Flatten pairs
-        pair_records = []
-        for p in pairs:
-            pair_records.append(
-                {
-                    "student_id": p.student_id,
-                    "scholarship_id": p.scholarship_id,
-                    "relevance_score": round(p.relevance_score, 4),
-                    "timestamp": p.timestamp,
-                }
-            )
+        pair_records = [
+            {
+                "student_id": p.student_id,
+                "scholarship_id": p.scholarship_id,
+                "relevance_score": round(p.relevance_score, 4),
+                "timestamp": p.timestamp,
+            }
+            for p in pairs
+        ]
 
-        # Flatten feedback
-        feedback_records = []
-        for f in feedbacks:
-            feedback_records.append(
-                {
-                    "student_id": f.student_id,
-                    "scholarship_id": f.scholarship_id,
-                    "feedback_type": f.feedback_type,
-                    "weight": f.weight,
-                    "timestamp": f.timestamp,
-                }
-            )
+        feedback_records = [
+            {
+                "student_id": f.student_id,
+                "scholarship_id": f.scholarship_id,
+                "feedback_type": f.feedback_type,
+                "weight": f.weight,
+                "timestamp": f.timestamp,
+            }
+            for f in feedbacks
+        ]
 
         pd.DataFrame(student_records).to_csv(f"{output_dir}/students.csv", index=False)
         pd.DataFrame(pair_records).to_csv(f"{output_dir}/pairs.csv", index=False)

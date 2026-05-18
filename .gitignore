@@ -85,3 +85,7 @@ tensorboard/
 # ─── Local Claude / agent state ──────────────────────────
 .claude/
 CLAUDE.md
+.rtk/
+.agents/
+docs/agents/
+skills-lock.json
