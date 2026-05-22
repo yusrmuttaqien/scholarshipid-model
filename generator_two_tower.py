@@ -1,48 +1,39 @@
-"""Two-Tower Recommendation System - Dataset Generator
+"""Two-Tower Recommendation System - Dataset Generator (Fusion)
 
-Loads real scholarship data directly from src/data/scholarships.py,
-then generates synthetic students, realistic pairs, and implicit feedback.
+Generates synthetic training data for a two-tower neural network
+that predicts continuous relevance scores (0.0-1.0) between
+students and scholarships.
+
+Uses:
+  - Yusr's student/scholarship generation logic
+  - Almer's 5-stage relevance scorer (hard eligibility + component scores)
 
 Output structure:
     datasets_two_tower/
-    ├── scholarships.csv      # produced by generate_scholarships()
-    ├── students.csv          # 20,000 synthetic students
-    ├── pairs.csv             # Pairs with continuous relevance_score
+    ├── students.csv          # 20,000 students
+    ├── scholarships.csv      # 800 synthetic scholarships
+    ├── pairs.csv             # Balanced pairs with continuous relevance_score
     └── feedback.csv          # Implicit feedback for retraining
-
-Relevance bands:
-    - Match (>=0.7):       strong attribute alignment (~2% of random pairs)
-    - In-Between (0.3-0.7): partial alignment (~18% of random pairs)
-    - Not Match (<0.3):    eligibility knockout or no alignment (~80%)
-
-Scoring uses a 5-stage pipeline that leverages every student & scholarship
-feature in the schemas: hard eligibility gating → component scores
-(academic, olympiad, leadership, extracurricular, essay) → per-scholarship
-selection_criteria weighting → lateral fit bonuses (track, field, location,
-career, school tier, funding) → diversity boost + small noise.
 """
 
+import json
+import os
 import random
 from datetime import datetime, timedelta
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
+import pandas as pd
 
-from src.data.students import (
-    ALL_COUNTRIES,
-    ACHIEVEMENT_TEMPLATES,
-    COUNTRIES_BY_REGION,
-    FUTURE_GOALS_TEMPLATES,
-    PERSONAL_STATEMENT_TEMPLATES,
-    RESEARCH_INTERESTS,
-    SCHOOL_NAMES,
-)
 from src.schemas import (
     CareerTrack,
     Feedback,
+    FundingCoverage,
     HighSchoolTrack,
+    HostRegion,
     IncomeCategory,
     LanguageProficiency,
+    LanguageRequirement,
     LanguageTest,
     MajorField,
     OlympiadLevel,
@@ -50,10 +41,13 @@ from src.schemas import (
     Pair,
     Scholarship,
     SchoolTier,
+    SelectionCriteria,
     Student,
 )
 from src.io import save_to_csv
-from src.scorer import compute_relevance_score
+
+# Enums and dataclasses are imported from src.schemas (see src/schemas/enums.py)
+# No need to redefine here.
 
 
 # ============================================================
@@ -64,41 +58,175 @@ from src.scorer import compute_relevance_score
 class TwoTowerDatasetGenerator:
     """Generate synthetic datasets for two-tower recommendation system.
 
-    Produces pairs with continuous relevance scores (0.0-1.0) for
-    regression training. Distribution reflects real-world scholarship
-    matching: most random pairs are knockouts, few are strong matches.
+    Produces balanced pairs with continuous relevance scores (0.0-1.0)
+    for regression training.
+
+    Pair categories:
+        - Match:       relevance ~0.8-1.0 (strong attribute alignment)
+        - In-Between:  relevance ~0.3-0.6 (partial alignment)
+        - Not Match:   relevance ~0.0-0.2 (no alignment)
     """
 
     def __init__(
         self,
         num_students: int = 20_000,
+        num_scholarships: int = 800,
         seed: int = 42,
     ):
         self.num_students = num_students
+        self.num_scholarships = num_scholarships
         self.seed = seed
         self.rng = np.random.RandomState(seed)
         self.prng = random.Random(seed)
-        self.all_countries = ALL_COUNTRIES
-        self.host_countries_by_region = COUNTRIES_BY_REGION
-        self.school_names = SCHOOL_NAMES
-        self.personal_statement_templates = PERSONAL_STATEMENT_TEMPLATES
-        self.future_goals_templates = FUTURE_GOALS_TEMPLATES
-        self.research_interests = RESEARCH_INTERESTS
-        self.achievement_templates = ACHIEVEMENT_TEMPLATES
 
-    def generate_scholarships(self) -> List[Scholarship]:
-        """Load all hardcoded scholarships and assign sequential IDs."""
-        from src.data.scholarships import ALL_SCRAPERS
-        scholarships = []
-        for name, fn in ALL_SCRAPERS:
-            try:
-                results = fn()
-                scholarships.extend(results)
-            except Exception as exc:
-                print(f"  [WARNING] {name} failed: {exc}")
-        for i, sch in enumerate(scholarships):
-            sch.scholarship_id = f"SCH_{i:06d}"
-        return scholarships
+        # Country groups
+        self.asian_countries = [
+            "indonesia",
+            "malaysia",
+            "thailand",
+            "philippines",
+            "vietnam",
+            "singapore",
+            "japan",
+            "south_korea",
+            "china",
+            "india",
+        ]
+        self.european_countries = [
+            "france",
+            "germany",
+            "netherlands",
+            "sweden",
+            "uk",
+            "switzerland",
+        ]
+        self.american_countries = ["canada", "usa"]
+        self.african_countries = [
+            "egypt",
+            "kenya",
+            "morocco",
+            "nigeria",
+            "south_africa",
+        ]
+        self.oceanian_countries = ["australia", "new_zealand"]
+        self.south_american_countries = ["argentina", "brazil", "chile"]
+
+        self.all_countries = (
+            self.asian_countries
+            + self.european_countries
+            + self.american_countries
+            + self.african_countries
+            + self.oceanian_countries
+            + self.south_american_countries
+        )
+
+        # Host countries by region
+        self.host_countries_by_region = {
+            "asia": self.asian_countries,
+            "europe": self.european_countries,
+            "north_america": self.american_countries,
+            "south_america": self.south_american_countries,
+            "africa": self.african_countries,
+            "oceania": self.oceanian_countries,
+        }
+
+        # School names per country
+        self.school_names = {
+            "indonesia": [
+                "SMA Negeri 1 Jakarta",
+                "SMAN 3 Surabaya",
+                "SMA Muhammadiyah 1 Bandung",
+                "SMAN 5 Medan",
+                "SMA Katolik Santa Maria Yogyakarta",
+            ],
+            "malaysia": [
+                "Sekolah Menengah Kebangsaan Kuala Lumpur",
+                "SMK Damansara",
+                "Sekolah Menengah Teknik Johor",
+            ],
+            "thailand": [
+                "Chulalongkorn Academic Division School",
+                "Suankularb Wittayalai School",
+            ],
+            "philippines": [
+                "University of the Philippines High School",
+                "Ateneo de Manila Senior High",
+            ],
+            "vietnam": [
+                "Lý Tự Trọng High School",
+                "Tuan Minh High School",
+            ],
+            "india": [
+                "Delhi Public School",
+                "Kendriya Vidyalaya",
+            ],
+            "japan": [
+                "Tokyo Metropolitan Nagatsuta High School",
+                "Bunka High School",
+            ],
+            "south_korea": [
+                "Seoul High School",
+                "Hwawon High School",
+            ],
+            "china": [
+                "Beijing No.4 High School",
+                "Shanghai High School",
+            ],
+            "singapore": [
+                "Raffles Institution",
+                "Hwa Chong Institution",
+            ],
+        }
+
+        # Text templates
+        self.personal_statement_templates = [
+            "I am passionate about {field} and aspire to make a significant contribution to {interest}.",
+            "My journey in {field} began during high school where I discovered my love for {interest}.",
+            "As a dedicated student of {track}, I have been actively involved in {activity}.",
+            "Growing up in {country}, I witnessed firsthand the challenges in {interest} and want to address them.",
+        ]
+
+        self.future_goals_templates = [
+            "After completing my studies, I plan to return home and contribute to {interest} in my community.",
+            "My long-term goal is to become a leader in {field} and drive innovation in {region}.",
+            "I aspire to establish a program focused on {interest} that benefits underrepresented communities.",
+            "I want to bridge the gap between {field} and {interest} through research and practice.",
+        ]
+
+        self.mission_statement_templates = [
+            "We seek to support outstanding students in {field} who demonstrate commitment to {goal}.",
+            "This scholarship aims to nurture future leaders in {field} with a passion for {interest}.",
+            "Our mission is to empower talented individuals from {region} pursuing excellence in {field}.",
+        ]
+
+        self.target_profile_templates = [
+            "We are looking for candidates with strong academic records and proven {activity} experience.",
+            "Ideal candidates demonstrate excellence in {field} and commitment to {goal}.",
+            "We value students who show leadership potential and dedication to {interest}.",
+        ]
+
+        self.research_interests = [
+            "artificial intelligence",
+            "machine learning",
+            "climate change mitigation",
+            "public health policy",
+            "renewable energy systems",
+            "financial technology",
+            "human-computer interaction",
+            "genomic research",
+            "education reform",
+            "sustainable agriculture",
+            "quantum computing",
+            "cybersecurity",
+        ]
+
+        self.achievement_templates = [
+            "Achieved {level} level in {subject} olympiad.",
+            "Won {competition} competition at the {level} level.",
+            "Led a team of {team_size} in a {subject} project.",
+            "Volunteered {hours} hours for community service.",
+            "Served as {position} in student council.",
+        ]
 
     def _get_school_name(self, nationality: str) -> str:
         """Get a random school name for the given nationality."""
@@ -264,29 +392,280 @@ class TwoTowerDatasetGenerator:
             can_self_fund_living=can_self_fund_living,
         )
 
+    def generate_scholarship(self, scholarship_id: str) -> Scholarship:
+        """Generate a synthetic scholarship record."""
+        region = self.prng.choice([e.value for e in HostRegion])
+        host_country = self.prng.choice(
+            self.host_countries_by_region.get(region, self.all_countries)
+        )
+
+        # Eligible nationalities (typically 2-8 countries)
+        num_nationalities = self.rng.randint(2, 8)
+        eligible_nationalities = self.prng.sample(
+            self.all_countries, min(num_nationalities, len(self.all_countries))
+        )
+
+        # Age range for high school students
+        min_age = self.rng.choice([15, 16, 17])
+        max_age = min_age + self.rng.randint(3, 6)
+
+        # Eligible degree levels (always includes high_school)
+        eligible_degree_levels = ["high_school"]
+        if self.prng.random() > 0.5:
+            eligible_degree_levels.append("bachelors")
+
+        # Eligible high school tracks
+        num_tracks = self.rng.randint(1, 3)
+        eligible_tracks = self.prng.sample(
+            [e.value for e in HighSchoolTrack], num_tracks
+        )
+
+        # Eligible fields
+        num_fields = self.rng.randint(1, 5)
+        eligible_fields = self.prng.sample(
+            [e.value for e in MajorField], num_fields
+        )
+
+        # Preferred school tier
+        preferred_tier = self.prng.choice(
+            ["excellence", "public_a", "private_a", "accredited_b"]
+        )
+
+        # Score requirements (0-100 scale)
+        min_report_avg = round(self.rng.uniform(55, 85), 1)
+        min_major_avg = round(self.rng.uniform(50, 80), 1)
+
+        # Language requirements
+        language_requirements = []
+        if self.prng.random() > 0.2:
+            test_type = self.prng.choices(
+                [e.value for e in LanguageTest],
+                weights=[30, 30, 5, 5, 5, 5],
+            )[0]
+            score_map = {
+                "toefl": self.rng.uniform(80, 110),
+                "ielts": self.rng.uniform(6.0, 8.0),
+                "topik": self.rng.randint(3, 5) * 50,
+                "jlpt": self.rng.randint(2, 4) * 20,
+                "delf": self.rng.randint(2, 4) * 20,
+                "hsk": self.rng.randint(3, 5) * 20,
+            }
+            min_score = round(score_map.get(test_type, 60), 1)
+            is_mandatory = self.prng.random() > 0.3
+            language_requirements.append(
+                LanguageRequirement(
+                    test_type=test_type, min_score=min_score, is_mandatory=is_mandatory
+                )
+            )
+
+        # Financial need requirement
+        requires_financial_need = self.prng.random() < 0.25
+        max_income = self.prng.choice(
+            ["very_low", "low", "middle", "upper_middle"]
+        )
+
+        # Selection criteria (normalized weights)
+        raw_criteria = {
+            "academic": round(self.rng.uniform(0.2, 0.5), 2),
+            "leadership": round(self.rng.uniform(0.05, 0.3), 2),
+            "olympiad": round(self.rng.uniform(0.1, 0.4), 2),
+            "extracurricular": round(self.rng.uniform(0.05, 0.3), 2),
+            "essay": round(self.rng.uniform(0.05, 0.3), 2),
+        }
+        total = sum(raw_criteria.values())
+        selection_criteria = SelectionCriteria(
+            academic=round(raw_criteria["academic"] / total, 4),
+            leadership=round(raw_criteria["leadership"] / total, 4),
+            olympiad=round(raw_criteria["olympiad"] / total, 4),
+            extracurricular=round(raw_criteria["extracurricular"] / total, 4),
+            essay=round(raw_criteria["essay"] / total, 4),
+        )
+
+        # Funding coverage
+        funding_coverage = FundingCoverage(
+            covers_tuition=self.prng.random() > 0.2,
+            covers_living_expense=self.prng.random() > 0.3,
+            covers_airfare=self.prng.random() > 0.5,
+            covers_insurance=self.prng.random() > 0.6,
+            monthly_stipend=round(self.rng.uniform(0, 2000), 2),
+        )
+
+        # Career preference
+        career_track_preference = (
+            self.prng.choice([e.value for e in CareerTrack])
+            if self.prng.random() > 0.5
+            else None
+        )
+
+        # Return home requirement
+        requires_return = self.prng.random() < 0.3
+
+        # Text fields
+        fld = eligible_fields[0] if eligible_fields else "computer_science"
+        interest = self.prng.choice(self.research_interests)
+
+        mission = self.prng.choice(self.mission_statement_templates).format(
+            field=fld,
+            interest=interest,
+            region=region.capitalize(),
+            goal=self.prng.choice(
+                ["societal impact", "innovation", "knowledge advancement"]
+            ),
+        )
+
+        target_profile = self.prng.choice(self.target_profile_templates).format(
+            field=fld,
+            activity=self.prng.choice(["research", "leadership"]),
+            interest=interest,
+            goal=self.prng.choice(
+                ["community service", "technological advancement"]
+            ),
+        )
+
+        name = f"{host_country.replace('_', ' ').title()} {fld.replace('_', ' ').title()} Scholarship"
+
+        return Scholarship(
+            scholarship_id=scholarship_id,
+            name=name,
+            eligible_nationalities=eligible_nationalities,
+            min_age=min_age,
+            max_age=max_age,
+            eligible_degree_levels=eligible_degree_levels,
+            eligible_high_school_tracks=eligible_tracks,
+            eligible_fields=eligible_fields,
+            preferred_school_tier=preferred_tier,
+            min_report_card_average=min_report_avg,
+            min_major_subject_average=min_major_avg,
+            language_requirements=language_requirements,
+            requires_financial_need=requires_financial_need,
+            max_family_income_category=max_income,
+            host_country=host_country,
+            host_region=region,
+            selection_criteria=selection_criteria,
+            funding_coverage=funding_coverage,
+            career_track_preference=career_track_preference,
+            requires_return_home_country=requires_return,
+            mission_statement=mission,
+            target_recipient_profile=target_profile,
+        )
+
+    def compute_relevance_score(
+        self, student: Student, scholarship: Scholarship
+    ) -> float:
+        """Compute continuous relevance score (0.0-1.0) based on attribute alignment."""
+        scores = []
+        weights = []
+
+        # 1. Nationality match (weight: 0.20)
+        if student.nationality in scholarship.eligible_nationalities:
+            scores.append(1.0)
+        else:
+            scores.append(0.0)
+        weights.append(0.20)
+
+        # 2. Age compatibility (weight: 0.10)
+        if scholarship.min_age <= student.age <= scholarship.max_age:
+            scores.append(1.0)
+        else:
+            scores.append(0.0)
+        weights.append(0.10)
+
+        # 3. High school track match (weight: 0.15)
+        if student.high_school_track in scholarship.eligible_high_school_tracks:
+            scores.append(1.0)
+        else:
+            scores.append(0.1)
+        weights.append(0.15)
+
+        # 4. Report card average margin (weight: 0.10)
+        if student.overall_report_card_average >= scholarship.min_report_card_average:
+            margin = min(
+                (student.overall_report_card_average - scholarship.min_report_card_average)
+                / 30.0,
+                1.0,
+            )
+            scores.append(max(margin, 0.0))
+        else:
+            deficit = (scholarship.min_report_card_average - student.overall_report_card_average) / 50.0
+            scores.append(max(1.0 - deficit, 0.0))
+        weights.append(0.10)
+
+        # 5. Major subject average margin (weight: 0.10)
+        if student.major_subject_average >= scholarship.min_major_subject_average:
+            margin = min(
+                (student.major_subject_average - scholarship.min_major_subject_average)
+                / 30.0,
+                1.0,
+            )
+            scores.append(max(margin, 0.0))
+        else:
+            deficit = (scholarship.min_major_subject_average - student.major_subject_average) / 50.0
+            scores.append(max(1.0 - deficit, 0.0))
+        weights.append(0.10)
+
+        # 6. Language requirement match (weight: 0.10)
+        lang_score = 1.0
+        for req in scholarship.language_requirements:
+            student_scores = [
+                lp.score
+                for lp in student.language_proficiency
+                if lp.test_type == req.test_type
+            ]
+            if student_scores:
+                max_s = max(student_scores)
+                if max_s >= req.min_score:
+                    lang_score = min(lang_score, 1.0)
+                else:
+                    lang_score = min(lang_score, max_s / req.min_score if req.min_score > 0 else 0.0)
+            elif req.is_mandatory:
+                lang_score *= 0.0
+        scores.append(lang_score)
+        weights.append(0.10)
+
+        # 7. Return home compatibility (weight: 0.05)
+        if scholarship.requires_return_home_country:
+            scores.append(1.0 if student.willing_to_return_home else 0.0)
+        else:
+            scores.append(1.0)
+        weights.append(0.05)
+
+        # 8. Financial need compatibility (weight: 0.05)
+        if scholarship.requires_financial_need:
+            income_order = ["very_low", "low", "middle", "upper_middle", "high"]
+            if student.family_income_category in income_order[:2]:
+                scores.append(1.0)
+            elif student.family_income_category == "middle":
+                scores.append(0.5)
+            else:
+                scores.append(0.0)
+        else:
+            scores.append(1.0)
+        weights.append(0.05)
+
+        weighted_sum = sum(s * w for s, w in zip(scores, weights))
+        total_weight = sum(weights)
+        relevance = round(weighted_sum / total_weight, 4)
+
+        return max(0.0, min(1.0, relevance))
+
     def _debug_distribution(
         self,
         students: List[Student],
         scholarships: List[Scholarship],
         sample_students: int = 50,
     ) -> None:
-        """Pre-generate sanity check: print histogram of relevance scores.
-
-        Samples N students × all scholarships, prints 10-bin histogram so we
-        can verify In-Between band (0.3–0.7) is not collapsed before committing
-        to full 800k-pair generation.
-        """
+        """Pre-generate sanity check: print histogram of relevance scores."""
         print("\n  [Distribution check] Sampling "
               f"{sample_students} students × {len(scholarships)} scholarships...")
         n = min(sample_students, len(students))
         sampled = self.prng.sample(students, n)
         scores = [
-            compute_relevance_score(s, sch, self.rng, self.host_countries_by_region)
+            self.compute_relevance_score(s, sch)
             for s in sampled
             for sch in scholarships
         ]
         total = len(scores)
-        bins = [0] * 10  # 0.0-0.1, 0.1-0.2, ..., 0.9-1.0
+        bins = [0] * 10
         for v in scores:
             idx = min(int(v * 10), 9)
             bins[idx] += 1
@@ -306,8 +685,7 @@ class TwoTowerDatasetGenerator:
         print(f"  [Bands] match={100*match/total:.2f}%  "
               f"in-between={100*inb/total:.2f}%  not-match={100*notm/total:.2f}%")
         if inb / total < 0.05:
-            print("  [WARNING] In-Between band <5% — consider tuning weights "
-                  "before full generation.")
+            print("  [WARNING] In-Between band <5% — consider tuning weights.")
 
     def generate_all_students(self) -> List[Student]:
         """Generate all students for the single pool."""
@@ -317,6 +695,14 @@ class TwoTowerDatasetGenerator:
             students.append(self.generate_student(student_id))
         return students
 
+    def generate_all_scholarships(self) -> List[Scholarship]:
+        """Generate all scholarships for the single pool."""
+        scholarships = []
+        for i in range(self.num_scholarships):
+            scholarship_id = f"SCH_{i:06d}"
+            scholarships.append(self.generate_scholarship(scholarship_id))
+        return scholarships
+
     def generate_balanced_pairs(
         self,
         students: List[Student],
@@ -325,32 +711,17 @@ class TwoTowerDatasetGenerator:
         ratio_inbetween: float = 1.0,
         ratio_notmatch: float = 1.0,
     ) -> List[Pair]:
-        """Generate balanced pairs across three categories.
-
-        Categories:
-            - Match (high relevance ~0.8-1.0): Strong attribute alignment
-            - In-Between (medium relevance ~0.3-0.6): Partial alignment
-            - Not Match (low relevance ~0.0-0.2): No alignment
-
-        Args:
-            students: All students in the pool.
-            scholarships: All scholarships in the pool.
-            target_match_count: Target number of high-relevance pairs.
-            ratio_inbetween: Ratio of in-between pairs to match pairs.
-            ratio_notmatch: Ratio of not-match pairs to match pairs.
-        """
+        """Generate balanced pairs across three categories."""
         base_date = datetime(2024, 1, 1)
 
-        # Pre-generation sanity check: histogram on a small sample
+        # Pre-generation sanity check
         self._debug_distribution(students, scholarships, sample_students=50)
 
-        # Step 1: Compute relevance for ALL student-scholarship combinations
         print("\n  Computing relevance scores for all candidate pairs...")
 
         match_pairs = []
         inbetween_pairs = []
         notmatch_pairs = []
-
         total_combinations = len(students) * len(scholarships)
         print(f"  Total combinations: {total_combinations:,}")
 
@@ -358,12 +729,9 @@ class TwoTowerDatasetGenerator:
         for idx, student in enumerate(students):
             if idx % report_every == 0:
                 print(f"    Processing student {idx}/{len(students)}...")
-
             for scholarship in scholarships:
-                relevance = compute_relevance_score(student, scholarship, self.rng, self.host_countries_by_region)
-
+                relevance = self.compute_relevance_score(student, scholarship)
                 pair_record = (student.student_id, scholarship.scholarship_id, relevance)
-
                 if relevance >= 0.7:
                     match_pairs.append(pair_record)
                 elif relevance >= 0.3:
@@ -371,27 +739,19 @@ class TwoTowerDatasetGenerator:
                 else:
                     notmatch_pairs.append(pair_record)
 
-        # Step 2: Sample balanced pairs from each category
         print(f"  Found {len(match_pairs):,} match, {len(inbetween_pairs):,} in-between, {len(notmatch_pairs):,} not-match")
-
         target_inbetween = int(target_match_count * ratio_inbetween)
         target_notmatch = int(target_match_count * ratio_notmatch)
-
-        # Sample from each category
         final_match = self._sample_pairs(match_pairs, target_match_count)
         final_inbetween = self._sample_pairs(inbetween_pairs, target_inbetween)
         final_notmatch = self._sample_pairs(notmatch_pairs, target_notmatch)
-
         print(f"  Selected: {len(final_match):,} match, {len(final_inbetween):,} in-between, {len(final_notmatch):,} not-match")
 
-        # Step 3: Build Pair records with timestamps
         all_pairs = []
         for sid, schid, relevance in final_match + final_inbetween + final_notmatch:
             offset_days = self.rng.randint(0, 365)
             offset_hours = self.rng.randint(0, 23)
-            timestamp = (
-                base_date + timedelta(days=offset_days, hours=offset_hours)
-            ).strftime("%Y-%m-%dT%H:%M:%SZ")
+            timestamp = (base_date + timedelta(days=offset_days, hours=offset_hours)).strftime("%Y-%m-%dT%H:%M:%SZ")
             all_pairs.append(
                 Pair(
                     student_id=sid,
@@ -400,10 +760,7 @@ class TwoTowerDatasetGenerator:
                     timestamp=timestamp,
                 )
             )
-
-        # Sort by timestamp for time-based splitting
         all_pairs.sort(key=lambda p: p.timestamp)
-
         return all_pairs
 
     def _sample_pairs(
@@ -475,6 +832,93 @@ class TwoTowerDatasetGenerator:
 
         return feedbacks
 
+    def save_to_csv(
+        self,
+        students: List[Student],
+        scholarships: List[Scholarship],
+        pairs: List[Pair],
+        feedbacks: List[Feedback],
+        output_dir: str = "./datasets_two_tower",
+    ):
+        """Save all generated data to flat CSV files."""
+        os.makedirs(output_dir, exist_ok=True)
+
+        # Flatten student data
+        student_records = []
+        for s in students:
+            record = asdict(s)
+            record["language_proficiency"] = json.dumps(
+                [asdict(lp) for lp in s.language_proficiency]
+            )
+            record["olympiad_subjects"] = json.dumps(s.olympiad_subjects)
+            record["target_countries"] = json.dumps(s.target_countries)
+            student_records.append(record)
+
+        # Flatten scholarship data
+        scholarship_records = []
+        for sch in scholarships:
+            record = asdict(sch)
+            record["eligible_nationalities"] = json.dumps(sch.eligible_nationalities)
+            record["eligible_degree_levels"] = json.dumps(sch.eligible_degree_levels)
+            record["eligible_high_school_tracks"] = json.dumps(
+                sch.eligible_high_school_tracks
+            )
+            record["eligible_fields"] = json.dumps(sch.eligible_fields)
+            record["language_requirements"] = json.dumps(
+                [asdict(lr) for lr in sch.language_requirements]
+            )
+            record["selection_criteria"] = json.dumps(
+                asdict(sch.selection_criteria)
+            )
+            fc = sch.funding_coverage
+            del record["funding_coverage"]
+            record["funding_covers_tuition"] = fc.covers_tuition
+            record["funding_covers_living"] = fc.covers_living_expense
+            record["funding_covers_airfare"] = fc.covers_airfare
+            record["funding_covers_insurance"] = fc.covers_insurance
+            record["funding_monthly_stipend"] = fc.monthly_stipend
+            record["funding_is_full_funding"] = fc.is_full_funding
+            record["funding_coverage_count"] = fc.coverage_count
+            scholarship_records.append(record)
+
+        # Flatten pairs
+        pair_records = []
+        for p in pairs:
+            pair_records.append(
+                {
+                    "student_id": p.student_id,
+                    "scholarship_id": p.scholarship_id,
+                    "relevance_score": round(p.relevance_score, 4),
+                    "timestamp": p.timestamp,
+                }
+            )
+
+        # Flatten feedback
+        feedback_records = []
+        for f in feedbacks:
+            feedback_records.append(
+                {
+                    "student_id": f.student_id,
+                    "scholarship_id": f.scholarship_id,
+                    "feedback_type": f.feedback_type,
+                    "weight": f.weight,
+                    "timestamp": f.timestamp,
+                }
+            )
+
+        # Save to CSV
+        pd.DataFrame(student_records).to_csv(
+            f"{output_dir}/students.csv", index=False
+        )
+        pd.DataFrame(scholarship_records).to_csv(
+            f"{output_dir}/scholarships.csv", index=False
+        )
+        pd.DataFrame(pair_records).to_csv(f"{output_dir}/pairs.csv", index=False)
+        pd.DataFrame(feedback_records).to_csv(
+            f"{output_dir}/feedback.csv", index=False
+        )
+
+        return output_dir
 
 
 # ============================================================
@@ -483,34 +927,39 @@ class TwoTowerDatasetGenerator:
 
 
 def main():
+    """Generate and save datasets for the two-tower recommendation system."""
+
+    # Configuration
     NUM_STUDENTS = 20_000
+    NUM_SCHOLARSHIPS = 800
     SEED = 42
-    # With the 5-stage realistic scorer, ~1.8% of random pairs land in the
-    # match band (relevance >= 0.7). For 20k students × ~40 scholarships =
-    # 800k candidate pairs, that yields ~14–16k matches. We cap at 20k and
-    # take all available, then sample 3x as many in-between / not-match pairs
-    # to keep the dataset roughly proportional to real-world distribution
-    # while still giving the model enough match examples to learn from.
-    TARGET_MATCH_COUNT = 20_000
-    RATIO_INBETWEEN = 3.0
-    RATIO_NOTMATCH = 3.0
-    OUTPUT_DIR = "./datasets_two_tower"
+    TARGET_MATCH_COUNT = 250_000
 
     print("=" * 60)
-    print("Two-Tower Dataset Generator v1")
+    print("Two-Tower Recommendation System - Dataset Generator")
+    print("=" * 60)
+    print("Configuration:")
+    print(f"  Students: {NUM_STUDENTS:,}")
+    print(f"  Scholarships: {NUM_SCHOLARSHIPS:,}")
+    print(f"  Target match pairs: {TARGET_MATCH_COUNT:,}")
+    print(f"  Random seed: {SEED}")
     print("=" * 60)
 
-    generator = TwoTowerDatasetGenerator(num_students=NUM_STUDENTS, seed=SEED)
+    # Create generator
+    generator = TwoTowerDatasetGenerator(
+        num_students=NUM_STUDENTS,
+        num_scholarships=NUM_SCHOLARSHIPS,
+        seed=SEED,
+    )
 
-    # Load scholarships
-    print("\nLoading scholarships...")
-    scholarships = generator.generate_scholarships()
-    print(f"  Loaded {len(scholarships):,} scholarships")
-
-    # Generate students
-    print(f"\nGenerating {NUM_STUDENTS:,} students...")
+    # Generate all entities
+    print("\nGenerating students...")
     students = generator.generate_all_students()
     print(f"  Generated {len(students):,} students")
+
+    print("\nGenerating scholarships...")
+    scholarships = generator.generate_all_scholarships()
+    print(f"  Generated {len(scholarships):,} scholarships")
 
     # Generate balanced pairs
     print("\n" + "=" * 60)
@@ -518,39 +967,54 @@ def main():
     print("=" * 60)
 
     pairs = generator.generate_balanced_pairs(
-        students, scholarships,
+        students,
+        scholarships,
         target_match_count=TARGET_MATCH_COUNT,
-        ratio_inbetween=RATIO_INBETWEEN,
-        ratio_notmatch=RATIO_NOTMATCH,
+        ratio_inbetween=1.0,
+        ratio_notmatch=1.0,
     )
 
+    # Statistics on relevance score distribution
     scores = [p.relevance_score for p in pairs]
+    high = sum(1 for s in scores if s >= 0.7)
+    mid = sum(1 for s in scores if 0.3 <= s < 0.7)
+    low = sum(1 for s in scores if s < 0.3)
     print(f"\n  Relevance distribution:")
-    print(f"    Match (>=0.7):        {sum(1 for s in scores if s >= 0.7):,}")
-    print(f"    In-Between (0.3-0.7): {sum(1 for s in scores if 0.3 <= s < 0.7):,}")
-    print(f"    Not Match (<0.3):     {sum(1 for s in scores if s < 0.3):,}")
-    print(f"    Total pairs:          {len(pairs):,}")
+    print(f"    Match (>=0.7):    {high:,}")
+    print(f"    In-Between (0.3-0.7): {mid:,}")
+    print(f"    Not Match (<0.3): {low:,}")
+    print(f"    Total pairs:      {len(pairs):,}")
 
     # Generate feedback
     print("\nGenerating implicit feedback...")
-    feedbacks = generator.generate_feedback(students, scholarships, pairs, num_feedback_per_student=5)
+    feedbacks = generator.generate_feedback(
+        students, scholarships, pairs, num_feedback_per_student=5
+    )
     print(f"  Generated {len(feedbacks):,} feedback entries")
 
+    # Count feedback types
     type_counts: Dict[str, int] = {}
     for fb in feedbacks:
         type_counts[fb.feedback_type] = type_counts.get(fb.feedback_type, 0) + 1
     for fb_type, count in sorted(type_counts.items()):
         print(f"    {fb_type}: {count:,}")
 
-    # Save all datasets
-    save_to_csv(students, scholarships, pairs, feedbacks, OUTPUT_DIR)
+    # Save to CSV
+    output_dir = "./datasets_two_tower"
+    generator.save_to_csv(students, scholarships, pairs, feedbacks, output_dir)
 
     print("\n" + "=" * 60)
     print("Dataset generation complete!")
     print("=" * 60)
-    print(f"\nFiles saved to {OUTPUT_DIR}/:")
-    for fname in ["scholarships.csv", "students.csv", "pairs.csv", "feedback.csv"]:
-        print(f"  {fname}")
+
+    print(f"\nGenerated files in {output_dir}/:")
+    print("    students.csv")
+    print("    scholarships.csv")
+    print("    pairs.csv (balanced: match, in-between, not-match)")
+    print("    feedback.csv (implicit feedback for retraining)")
+
+    print("\nTime-based splitting (done in code):")
+    print("    Sort pairs by timestamp → 70% train, 15% val, 15% test")
 
 
 if __name__ == "__main__":
