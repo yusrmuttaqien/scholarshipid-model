@@ -1,44 +1,52 @@
 # Points to Remember: Scholarship.id Recommendation System
 
 ## Target Audience & Domain
-- The scholarship is for high schoolers (let's say age around 16–18).
-- Students target Bachelor's programs abroad.
-- Dataset has balanced pairs across three classes: Match (≥0.7), In-Between (0.3–0.7), Not Match (<0.3).
-  → [v1] Implemented in `generator.py` with balanced pair generation across all three classes
+- High school students (age ~16–18) targeting Bachelor's programs abroad.
+- Balanced pairs across three classes: Match (≥0.7), In-Between (0.3–0.7), Not Match (<0.3).
+  ✅ **[v1]** `generator.py` with balanced pair generation
 
 ## Architecture
 - Two-tower architecture using TensorFlow/Keras Functional API.
 - Student Tower and Scholarship Tower each produce a fixed-size embedding vector.
-  → [v1] `build_student_tower()` and `build_scholarship_tower()` in `train.py`
+  ✅ **[v1]** `build_student_tower()` / `build_scholarship_tower()` in `train.py`
 
 ## Custom Components
-- Implement at least one custom component: custom layer, custom loss function, or custom callback.
-  → [v1] `CosineSimilarity` custom layer in `train.py` (lines 90-102)
+- Implement at least one custom component: custom layer, loss function, or callback.
+  ✅ **[v1]** `CosineSimilarity` custom layer in `train.py` (lines 90–102)
 
 ## Model Output & Inference
-- Model returns continuous relevance scores in range [0, 1], not binary classification. Higher score = better match.
-  → [v1] CosineSimilarity layer outputs sigmoid-normalized cosine similarity in [0, 1]
-- Supports broadcast inference: one student profile against N scholarships returns an array of N scores.
-  → [v1] Model supports this via input shape flexibility (not yet a dedicated helper function)
+- Continuous relevance scores in [0, 1], not binary classification. Higher = better match.
+  ✅ **[v1]** CosineSimilarity outputs sigmoid-normalized cosine similarity
+- Supports broadcast inference: one student against N scholarships → array of N scores.
+  ✅ **[v1]** `InferenceEngine.recommend()` with batched input + hard filter filtering
 - Sort scores descending → top-K recommendations.
-  → [v1] Not yet implemented
+  ✅ **[v1]** Ranked in `inference.py` with `#1..#K` output
 
 ## Feedback Loop
-- System supports feedback loop: students can provide feedback on recommendations (apply, click, view, reject).
-  → [v1] `generate_feedback()` in `generator.py` creates feedback.csv with feedback types
-- Feedback is recorded with weights and used to improve / retrain the model.
-  → [v1] Not yet integrated into training loop
+- System supports feedback loop (apply, click, view, reject).
+  ⚠️ **[v1]** `generate_feedback()` creates `feedback.csv`, but not yet integrated into training loop.
 
 ## Training & Monitoring (Optional)
-- Implement training and evaluation loop from scratch using `tf.GradientTape`.
-  → [v1] Not implemented (using high-level `model.fit()` instead)
+- Training and evaluation loop from scratch using `tf.GradientTape`.
+  ❌ — Not done. Using high-level `model.fit()`.
 - Integrate with TensorBoard for monitoring and visualization.
-  → [v1] `TensorBoard` callback in `train.py` logging to `OUTPUT_DIR/logs/`
+  ✅ **[v1]** `TensorBoard` callback logging to `<v1>/models/logs/`
 - Commit TensorBoard logs to the repository.
-  → [v1] Logs generated to `<vN>/models/logs/`
+  ⚠️ — Logs generated, but not committed to repo.
 
 ## Performance Targets
 - Model accuracy ≥ 85% (binary classification threshold at 0.5).
-  → [v1] Achieved ~82.99% (close to target)
+  📊 **[v1]** ~82.99% — Close to target.
 - MAE ≤ 0.10 on validation set.
-  → [v1] Not yet met (in-between MAE=0.103, not match MAE=0.092)
+  ⚠️ [v1] Not met — In-between MAE=0.103, Not match MAE=0.092
+
+## Versioning Notes
+
+When adding new implementations:
+1. Create a new version directory (e.g., `v2/`) with its own `README.md` and `POINTS_TO_REMEMBER.md`.
+2. Add a row to this table for each feature — mark which version(s) implement it.
+3. Compare versions side-by-side using the status markers:
+   - ✅ **[v1]** Done in v1
+   - ⚠️ **[v1] [v2]** Partial — improved in v2 with X change
+   - ❌ — Not done yet
+4. Keep the latest version's `README.md` as the canonical reference; older versions are for historical comparison.

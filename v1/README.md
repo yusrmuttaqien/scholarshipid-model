@@ -409,3 +409,17 @@ cd v1
 python train.py --epochs 50 --batch-size 256
 # → saves best_model.keras, schema.json, mappings.pkl to models/
 ```
+
+### Monitoring with TensorBoard
+
+TensorBoard logs are saved to `v1/models/logs/` during training.
+
+```bash
+tensorboard --logdir v1/models/logs/ --port 6006
+```
+
+Then open http://localhost:6006 in your browser. Key tabs to monitor:
+
+- **Scalars**: loss, mae (train/val), learning rate schedule
+- **Graph**: model architecture visualization
+- **Distributions/Histograms**: weight and activation distributions over time
