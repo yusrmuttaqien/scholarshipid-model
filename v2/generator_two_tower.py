@@ -19,12 +19,20 @@ Output structure:
 import json
 import os
 import random
+import sys
 from dataclasses import asdict, field
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
+
+# Ensure project root is on sys.path so `from src.*` works when
+# running this file from any subdirectory (e.g. python v2/generator_two_tower.py)
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
 
 from src.schemas import (
     CareerTrack,
@@ -46,6 +54,7 @@ from src.schemas import (
     Student,
 )
 from src.io import save_to_csv
+from src.scorer import compute_relevance_score as _scorer
 
 # Enums and dataclasses are imported from src.schemas (see src/schemas/enums.py)
 # No need to redefine here.
@@ -59,13 +68,9 @@ from src.io import save_to_csv
 class TwoTowerDatasetGenerator:
     """Generate synthetic datasets for two-tower recommendation system.
 
-    Produces balanced pairs with continuous relevance scores (0.0-1.0)
-    for regression training.
-
-    Pair categories:
-        - Match:       relevance ~0.8-1.0 (strong attribute alignment)
-        - In-Between:  relevance ~0.3-0.6 (partial alignment)
-        - Not Match:   relevance ~0.0-0.2 (no alignment)
+    Produces pairs with continuous relevance scores (0.0-1.0) for
+    regression training. Distribution reflects real-world scholarship
+    matching: most random pairs are knockouts, few are strong matches.
     """
 
     def __init__(
@@ -550,105 +555,6 @@ class TwoTowerDatasetGenerator:
             target_recipient_profile=target_profile,
         )
 
-    def compute_relevance_score(
-        self, student: Student, scholarship: Scholarship
-    ) -> float:
-        """Compute continuous relevance score (0.0-1.0) based on attribute alignment."""
-        scores = []
-        weights = []
-
-        # 1. Nationality match (weight: 0.20)
-        if student.nationality in scholarship.eligible_nationalities:
-            scores.append(1.0)
-        else:
-            scores.append(0.0)
-        weights.append(0.20)
-
-        # 2. Age compatibility (weight: 0.10)
-        if scholarship.min_age <= student.age <= scholarship.max_age:
-            scores.append(1.0)
-        else:
-            scores.append(0.0)
-        weights.append(0.10)
-
-        # 3. High school track match (weight: 0.15)
-        if student.high_school_track in scholarship.eligible_high_school_tracks:
-            scores.append(1.0)
-        else:
-            scores.append(0.1)
-        weights.append(0.15)
-
-        # 4. Report card average margin (weight: 0.10)
-        if student.overall_report_card_average >= scholarship.min_report_card_average:
-            margin = min(
-                (student.overall_report_card_average - scholarship.min_report_card_average)
-                / 30.0,
-                1.0,
-            )
-            scores.append(max(margin, 0.0))
-        else:
-            deficit = (scholarship.min_report_card_average - student.overall_report_card_average) / 50.0
-            scores.append(max(1.0 - deficit, 0.0))
-        weights.append(0.10)
-
-        # 5. Major subject average margin (weight: 0.10)
-        if student.major_subject_average >= scholarship.min_major_subject_average:
-            margin = min(
-                (student.major_subject_average - scholarship.min_major_subject_average)
-                / 30.0,
-                1.0,
-            )
-            scores.append(max(margin, 0.0))
-        else:
-            deficit = (scholarship.min_major_subject_average - student.major_subject_average) / 50.0
-            scores.append(max(1.0 - deficit, 0.0))
-        weights.append(0.10)
-
-        # 6. Language requirement match (weight: 0.10)
-        lang_score = 1.0
-        for req in scholarship.language_requirements:
-            student_scores = [
-                lp.score
-                for lp in student.language_proficiency
-                if lp.test_type == req.test_type
-            ]
-            if student_scores:
-                max_s = max(student_scores)
-                if max_s >= req.min_score:
-                    lang_score = min(lang_score, 1.0)
-                else:
-                    lang_score = min(lang_score, max_s / req.min_score if req.min_score > 0 else 0.0)
-            elif req.is_mandatory:
-                lang_score *= 0.0
-        scores.append(lang_score)
-        weights.append(0.10)
-
-        # 7. Return home compatibility (weight: 0.05)
-        if scholarship.requires_return_home_country:
-            scores.append(1.0 if student.willing_to_return_home else 0.0)
-        else:
-            scores.append(1.0)
-        weights.append(0.05)
-
-        # 8. Financial need compatibility (weight: 0.05)
-        if scholarship.requires_financial_need:
-            income_order = ["very_low", "low", "middle", "upper_middle", "high"]
-            if student.family_income_category in income_order[:2]:
-                scores.append(1.0)
-            elif student.family_income_category == "middle":
-                scores.append(0.5)
-            else:
-                scores.append(0.0)
-        else:
-            scores.append(1.0)
-        weights.append(0.05)
-
-        weighted_sum = sum(s * w for s, w in zip(scores, weights))
-        total_weight = sum(weights)
-        relevance = round(weighted_sum / total_weight, 4)
-
-        return max(0.0, min(1.0, relevance))
-
     def _debug_distribution(
         self,
         students: List[Student],
@@ -661,7 +567,7 @@ class TwoTowerDatasetGenerator:
         n = min(sample_students, len(students))
         sampled = self.prng.sample(students, n)
         scores = [
-            self.compute_relevance_score(s, sch)
+            _scorer(s, sch, self.rng, self.host_countries_by_region)
             for s in sampled
             for sch in scholarships
         ]
@@ -731,7 +637,7 @@ class TwoTowerDatasetGenerator:
             if idx % report_every == 0:
                 print(f"    Processing student {idx}/{len(students)}...")
             for scholarship in scholarships:
-                relevance = self.compute_relevance_score(student, scholarship)
+                relevance = _scorer(student, scholarship, self.rng, self.host_countries_by_region)
                 pair_record = (student.student_id, scholarship.scholarship_id, relevance)
                 if relevance >= 0.7:
                     match_pairs.append(pair_record)

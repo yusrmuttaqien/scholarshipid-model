@@ -19,12 +19,20 @@ Output structure:
 import json
 import os
 import random
+import sys
 from dataclasses import asdict, field
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
+
+# Ensure project root is on sys.path so `from src.*` works when
+# running this file from any subdirectory (e.g. python v3/generator_two_tower.py)
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
 
 from src.schemas import (
     CareerTrack,
