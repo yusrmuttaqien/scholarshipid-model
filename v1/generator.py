@@ -1,4 +1,4 @@
-"""Two-Tower Recommendation System - Dataset Generator (Fusion)
+"""Recommendation System - Dataset Generator (Fusion)
 
 Generates synthetic training data for a two-tower neural network
 that predicts continuous relevance scores (0.0-1.0) between
@@ -9,7 +9,7 @@ Uses:
   - Almer's 5-stage relevance scorer (hard eligibility + component scores)
 
 Output structure:
-    datasets_two_tower/
+    <vN>/datasets/
     ├── students.csv          # 20,000 students
     ├── scholarships.csv      # 800 synthetic scholarships
     ├── pairs.csv             # Balanced pairs with continuous relevance_score
@@ -847,7 +847,7 @@ class TwoTowerDatasetGenerator:
         scholarships: List[Scholarship],
         pairs: List[Pair],
         feedbacks: List[Feedback],
-        output_dir: str = "./datasets_two_tower",
+        output_dir: str = None,
     ):
         """Save all generated data to flat CSV files."""
         os.makedirs(output_dir, exist_ok=True)
@@ -945,7 +945,7 @@ def main():
     TARGET_MATCH_COUNT = 250_000
 
     print("=" * 60)
-    print("Two-Tower Recommendation System - Dataset Generator")
+    print("Recommendation System - Dataset Generator")
     print("=" * 60)
     print("Configuration:")
     print(f"  Students: {NUM_STUDENTS:,}")
@@ -1009,7 +1009,7 @@ def main():
         print(f"    {fb_type}: {count:,}")
 
     # Save to CSV
-    output_dir = "./datasets_two_tower"
+    output_dir = str(_SCRIPT_DIR / "datasets")
     generator.save_to_csv(students, scholarships, pairs, feedbacks, output_dir)
 
     print("\n" + "=" * 60)

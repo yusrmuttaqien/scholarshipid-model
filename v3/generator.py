@@ -1,4 +1,4 @@
-"""Two-Tower Recommendation System - Dataset Generator (Fusion)
+"""Recommendation System - Dataset Generator (Fusion)
 
 Generates synthetic training data for a two-tower neural network
 that predicts continuous relevance scores (0.0-1.0) between
@@ -9,7 +9,7 @@ Uses:
   - Almer's 5-stage relevance scorer (hard eligibility + component scores)
 
 Output structure:
-    datasets_two_tower/
+    <vN>/datasets/
     ├── students.csv          # 20,000 students
     ├── scholarships.csv      # 800 synthetic scholarships
     ├── pairs.csv             # Balanced pairs with continuous relevance_score
@@ -29,7 +29,7 @@ import numpy as np
 import pandas as pd
 
 # Ensure project root is on sys.path so `from src.*` works when
-# running this file from any subdirectory (e.g. python v4/generator_two_tower.py)
+# running this file from any subdirectory (e.g. python v3/generator_two_tower.py)
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
@@ -56,8 +56,8 @@ from src.schemas import (
 from src.io import save_to_csv
 from src.scorer import compute_relevance_score as _scorer
 
-# Enums and dataclasses are imported from src.schemas (see src/schemas/enums.py)
-# No need to redefine here.
+# V3: Hybrid scoring — Almer's hard-eligibility gating + softened component scores
+# This produces more matches than pure Almer while keeping realistic distribution
 
 
 # ============================================================
@@ -637,8 +637,18 @@ class TwoTowerDatasetGenerator:
             if idx % report_every == 0:
                 print(f"    Processing student {idx}/{len(students)}...")
             for scholarship in scholarships:
-                relevance = _scorer(student, scholarship, self.rng, self.host_countries_by_region)
-                pair_record = (student.student_id, scholarship.scholarship_id, relevance)
+                raw_score = _scorer(student, scholarship, self.rng, self.host_countries_by_region)
+                # V3: Soften Almer's scoring more aggressively — blend with Yusr's approach
+                # This produces more matches while keeping realistic distribution
+                if raw_score >= 0.7:
+                    relevance = raw_score  # Keep strong matches as-is
+                elif raw_score >= 0.5:
+                    relevance = raw_score * 1.3 + 0.1  # Boost borderline cases significantly
+                elif raw_score >= 0.3:
+                    relevance = raw_score * 1.1 + 0.05  # Moderate boost
+                else:
+                    relevance = raw_score * 0.9  # Slight suppression
+                pair_record = (student.student_id, scholarship.scholarship_id, round(relevance, 4))
                 if relevance >= 0.7:
                     match_pairs.append(pair_record)
                 elif relevance >= 0.3:
@@ -745,7 +755,7 @@ class TwoTowerDatasetGenerator:
         scholarships: List[Scholarship],
         pairs: List[Pair],
         feedbacks: List[Feedback],
-        output_dir: str = "./datasets_two_tower",
+        output_dir: str = None,
     ):
         """Save all generated data to flat CSV files."""
         os.makedirs(output_dir, exist_ok=True)
@@ -841,9 +851,12 @@ def main():
     NUM_SCHOLARSHIPS = 800
     SEED = 42
     TARGET_MATCH_COUNT = 250_000
+    # V3: More aggressive balancing — prioritize match examples for better model learning
+    RATIO_INBETWEEN = 0.5
+    RATIO_NOTMATCH = 0.5
 
     print("=" * 60)
-    print("Two-Tower Recommendation System - Dataset Generator")
+    print("Recommendation System - Dataset Generator")
     print("=" * 60)
     print("Configuration:")
     print(f"  Students: {NUM_STUDENTS:,}")
@@ -877,8 +890,8 @@ def main():
         students,
         scholarships,
         target_match_count=TARGET_MATCH_COUNT,
-        ratio_inbetween=1.0,
-        ratio_notmatch=1.0,
+        ratio_inbetween=RATIO_INBETWEEN,
+        ratio_notmatch=RATIO_NOTMATCH,
     )
 
     # Statistics on relevance score distribution
@@ -907,7 +920,7 @@ def main():
         print(f"    {fb_type}: {count:,}")
 
     # Save to CSV
-    output_dir = "./datasets_two_tower"
+    output_dir = str(_SCRIPT_DIR / "datasets")
     generator.save_to_csv(students, scholarships, pairs, feedbacks, output_dir)
 
     print("\n" + "=" * 60)

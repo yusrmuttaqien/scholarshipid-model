@@ -1,4 +1,4 @@
-"""Two-Tower Recommendation System — Training Script (MVP)
+"""Recommendation System — Training Script (MVP)
 
 Simple training pipeline using TensorFlow/Keras.
 Loads CSV datasets, preprocesses features in pandas,
@@ -24,8 +24,12 @@ from tensorflow.keras import layers
 # Constants
 # ============================================================
 
-DATASET_DIR = "datasets_two_tower"
-OUTPUT_DIR = "models_two_tower"
+_SCRIPT_DIR = Path(__file__).resolve().parent
+_DATASET_DIR = _SCRIPT_DIR / "datasets"
+_OUTPUT_DIR = _SCRIPT_DIR / "models"
+
+DATASET_DIR = str(_DATASET_DIR)
+OUTPUT_DIR = str(_OUTPUT_DIR)
 EPOCHS = 30
 BATCH_SIZE = 256
 EMBEDDING_DIM = 64
@@ -438,7 +442,7 @@ def train(args):
     print(f"\nBinary Accuracy (threshold=0.5): {accuracy * 100:.2f}%")
 
     # --- Save model ---
-    final_path = os.path.join(OUTPUT_DIR, "two_tower_model.keras")
+    final_path = os.path.join(OUTPUT_DIR, "model.keras")
     model.save(final_path)
     print(f"\nModel saved to {final_path}")
     print(f"Checkpoint saved to {checkpoint_path}")

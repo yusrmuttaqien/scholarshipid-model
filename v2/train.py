@@ -1,4 +1,4 @@
-"""Two-Tower Recommendation System — Training Script (MVP)
+"""Recommendation System — Training Script (MVP)
 
 Simple training pipeline using TensorFlow/Keras.
 Loads CSV datasets, preprocesses features in pandas,
@@ -24,11 +24,15 @@ from tensorflow.keras import layers
 # Constants
 # ============================================================
 
-DATASET_DIR = "datasets_two_tower"
-OUTPUT_DIR = "models_two_tower"
+_SCRIPT_DIR = Path(__file__).resolve().parent
+_DATASET_DIR = _SCRIPT_DIR / "datasets"
+_OUTPUT_DIR = _SCRIPT_DIR / "models"
+
+DATASET_DIR = str(_DATASET_DIR)
+OUTPUT_DIR = str(_OUTPUT_DIR)
 EPOCHS = 30
-BATCH_SIZE = 256
-EMBEDDING_DIM = 64
+BATCH_SIZE = 128
+EMBEDDING_DIM = 128
 LEARNING_RATE = 1e-3
 SEED = 42
 
@@ -102,32 +106,40 @@ class CosineSimilarity(layers.Layer):
 # Tower Builders — use packed inputs for efficiency
 # ============================================================
 
-def build_student_tower(input_dim: int, embedding_dim: int = 64) -> keras.Model:
-    """Student tower: packed input → embedding."""
-    inp = layers.Input(shape=(input_dim,), dtype=tf.float32, name="student_inputs")
-    x = layers.Dense(128, activation="relu", name="student_dense_128")(inp)
-    x = layers.BatchNormalization(name="student_bn_128")(x)
-    x = layers.Dense(64, activation="relu", name="student_dense_64")(x)
-    x = layers.BatchNormalization(name="student_bn_64")(x)
-    embedding = layers.Dense(embedding_dim, activation=None, name="student_embedding")(x)
+def build_student_tower(input_dim: int, embedding_dim: int = 128) -> keras.Model:
+    """Student tower with deeper architecture."""
+    inp = layers.Input(shape=(input_dim,), name="student_inputs")
+    x = layers.Dense(256, activation='relu')(inp)
+    x = layers.BatchNormalization()(x)
+    x = layers.Dropout(0.3)(x)
+    x = layers.Dense(128, activation='relu')(x)
+    x = layers.BatchNormalization()(x)
+    x = layers.Dropout(0.3)(x)
+    x = layers.Dense(64, activation='relu')(x)
+    x = layers.BatchNormalization()(x)
+    embedding = layers.Dense(embedding_dim, activation='relu', name="student_embedding")(x)
     return keras.Model(inputs=inp, outputs=embedding, name="student_tower")
 
 
-def build_scholarship_tower(input_dim: int, embedding_dim: int = 64) -> keras.Model:
-    """Scholarship tower: packed input → embedding."""
-    inp = layers.Input(shape=(input_dim,), dtype=tf.float32, name="scholarship_inputs")
-    x = layers.Dense(128, activation="relu", name="scholarship_dense_128")(inp)
-    x = layers.BatchNormalization(name="scholarship_bn_128")(x)
-    x = layers.Dense(64, activation="relu", name="scholarship_dense_64")(x)
-    x = layers.BatchNormalization(name="scholarship_bn_64")(x)
-    embedding = layers.Dense(embedding_dim, activation=None, name="scholarship_embedding")(x)
+def build_scholarship_tower(input_dim: int, embedding_dim: int = 128) -> keras.Model:
+    """Scholarship tower with deeper architecture."""
+    inp = layers.Input(shape=(input_dim,), name="scholarship_inputs")
+    x = layers.Dense(256, activation='relu')(inp)
+    x = layers.BatchNormalization()(x)
+    x = layers.Dropout(0.3)(x)
+    x = layers.Dense(128, activation='relu')(x)
+    x = layers.BatchNormalization()(x)
+    x = layers.Dropout(0.3)(x)
+    x = layers.Dense(64, activation='relu')(x)
+    x = layers.BatchNormalization()(x)
+    embedding = layers.Dense(embedding_dim, activation='relu', name="scholarship_embedding")(x)
     return keras.Model(inputs=inp, outputs=embedding, name="scholarship_tower")
 
 
 def build_two_tower_model(
     student_input_dim: int,
     scholarship_input_dim: int,
-    embedding_dim: int = 64,
+    embedding_dim: int = 128,
 ) -> keras.Model:
     """Assemble two-tower model with cosine similarity output."""
     student_tower = build_student_tower(student_input_dim, embedding_dim)
@@ -438,7 +450,7 @@ def train(args):
     print(f"\nBinary Accuracy (threshold=0.5): {accuracy * 100:.2f}%")
 
     # --- Save model ---
-    final_path = os.path.join(OUTPUT_DIR, "two_tower_model.keras")
+    final_path = os.path.join(OUTPUT_DIR, "model.keras")
     model.save(final_path)
     print(f"\nModel saved to {final_path}")
     print(f"Checkpoint saved to {checkpoint_path}")
