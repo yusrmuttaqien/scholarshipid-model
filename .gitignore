@@ -67,7 +67,7 @@ credentials.json
 *.pt
 *.pth
 *.h5
-*.keras
+# *.keras
 *.onnx
 *.safetensors
 *.bin

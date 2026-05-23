@@ -1,0 +1,71 @@
+{
+  "student": {
+    "categorical": [
+      "nationality", "high_school_track", "school_tier",
+      "family_income_category", "intended_career_track", "olympiad_level"
+    ],
+    "numerical": [
+      "age", "overall_report_card_average", "math_score",
+      "english_score", "major_subject_average",
+      "leadership_experience_count", "volunteer_experience_count",
+      "competition_wins_count"
+    ],
+    "boolean": [
+      "willing_to_return_home", "from_underrepresented_region",
+      "needs_full_funding", "can_self_fund_living"
+    ],
+    "language_dim": 12,
+    "language_tests": ["toefl", "ielts", "topik", "jlpt", "delf", "hsk"],
+    "input_dim": 30
+  },
+  "scholarship": {
+    "categorical": [
+      "host_region", "preferred_school_tier",
+      "career_track_preference", "max_family_income_category"
+    ],
+    "numerical": [
+      "min_age", "max_age", "min_report_card_average",
+      "min_major_subject_average", "funding_monthly_stipend",
+      "funding_coverage_count"
+    ],
+    "boolean": [
+      "requires_financial_need", "requires_return_home_country",
+      "funding_covers_tuition", "funding_covers_living",
+      "funding_covers_airfare", "funding_covers_insurance",
+      "funding_is_full_funding"
+    ],
+    "list_vector_dim": 46,
+    "list_country_dim": 27,
+    "list_track_dim": 5,
+    "list_field_dim": 14,
+    "all_countries": [
+      "china", "india", "indonesia", "japan", "malaysia",
+      "philippines", "singapore", "south_korea", "thailand", "vietnam",
+      "france", "germany", "netherlands", "sweden", "uk",
+      "switzerland", "canada", "usa", "argentina", "brazil",
+      "chile", "egypt", "kenya", "morocco", "nigeria",
+      "south_africa", "australia", "new_zealand"
+    ],
+    "all_tracks": ["science", "social_studies", "languages", "religion", "vocational"],
+    "all_fields": [
+      "computer_science", "engineering", "medicine", "business",
+      "economics", "law", "education", "arts_humanities",
+      "social_sciences", "agriculture", "mathematics", "physics",
+      "chemistry", "biology"
+    ],
+    "all_list_values": [
+      "china", "india", "indonesia", "japan", "malaysia",
+      "philippines", "singapore", "south_korea", "thailand", "vietnam",
+      "france", "germany", "netherlands", "sweden", "uk",
+      "switzerland", "canada", "usa", "argentina", "brazil",
+      "chile", "egypt", "kenya", "morocco", "nigeria",
+      "south_africa", "australia", "new_zealand",
+      "science", "social_studies", "languages", "religion", "vocational",
+      "computer_science", "engineering", "medicine", "business",
+      "economics", "law", "education", "arts_humanities",
+      "social_sciences", "agriculture", "mathematics", "physics",
+      "chemistry", "biology"
+    ],
+    "input_dim": 63
+  }
+}

@@ -5,19 +5,25 @@ Two-stage pipeline:
   Stage 2: Two-tower neural network scoring
 
 Usage as CLI:
+    python inference.py --input student.json --top-k 5
     python inference.py --student-id STU_000001 --top-k 5
 
 Usage as library:
     from v1.inference import InferenceEngine
     engine = InferenceEngine()
-    recommendations = engine.recommend(student_id, student, scholarships)
+    recommendations = engine.recommend(student, scholarships)
+
+Schema-based portability:
+    The engine loads schema.json (saved by train.py) which defines column names,
+    types, and list vector structure. No hardcoded constants needed — inference
+    adapts automatically to whatever schema the model was trained with.
 """
 
 import argparse
 import json
 import pickle
 import sys
-from dataclasses import dataclass, field, asdict
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import List, Optional, Dict, Any
 
@@ -37,69 +43,6 @@ if str(_PROJECT_ROOT) not in sys.path:
 import tensorflow as tf
 from tensorflow import keras
 from tensorflow.keras import layers
-
-# ============================================================
-# Constants — must match train.py exactly
-# ============================================================
-
-_SCRIPT_DIR = Path(__file__).resolve().parent
-_MODEL_DIR = _SCRIPT_DIR / "models"
-
-STUDENT_CATEGORICAL = [
-    "nationality", "high_school_track", "school_tier",
-    "family_income_category", "intended_career_track", "olympiad_level",
-]
-STUDENT_NUMERICAL = [
-    "age", "overall_report_card_average", "math_score",
-    "english_score", "major_subject_average",
-    "leadership_experience_count", "volunteer_experience_count",
-    "competition_wins_count",
-]
-STUDENT_BOOLEAN = [
-    "willing_to_return_home", "from_underrepresented_region",
-    "needs_full_funding", "can_self_fund_living",
-]
-
-SCHOLARSHIP_CATEGORICAL = [
-    "host_region", "preferred_school_tier",
-    "career_track_preference", "max_family_income_category",
-]
-SCHOLARSHIP_NUMERICAL = [
-    "min_age", "max_age", "min_report_card_average",
-    "min_major_subject_average", "funding_monthly_stipend",
-    "funding_coverage_count",
-]
-SCHOLARSHIP_BOOLEAN = [
-    "requires_financial_need", "requires_return_home_country",
-    "funding_covers_tuition", "funding_covers_living",
-    "funding_covers_airfare", "funding_covers_insurance",
-    "funding_is_full_funding",
-]
-
-LIST_COUNTRY_DIM = 27
-LIST_TRACK_DIM = 5
-LIST_FIELD_DIM = 14
-LIST_VECTOR_DIM = LIST_COUNTRY_DIM + LIST_TRACK_DIM + LIST_FIELD_DIM  # 46
-
-ALL_COUNTRIES = [
-    "china", "india", "indonesia", "japan", "malaysia",
-    "philippines", "singapore", "south_korea", "thailand", "vietnam",
-    "france", "germany", "netherlands", "sweden", "uk",
-    "switzerland", "canada", "usa", "argentina", "brazil",
-    "chile", "egypt", "kenya", "morocco", "nigeria",
-    "south_africa", "australia", "new_zealand",
-]
-ALL_TRACKS = ["science", "social_studies", "languages", "religion", "vocational"]
-ALL_FIELDS = [
-    "computer_science", "engineering", "medicine", "business",
-    "economics", "law", "education", "arts_humanities",
-    "social_sciences", "agriculture", "mathematics", "physics",
-    "chemistry", "biology",
-]
-ALL_LIST_VALUES = ALL_COUNTRIES + ALL_TRACKS + ALL_FIELDS
-
-# Income category ordering for comparison
-INCOME_ORDER = ["very_low", "low", "middle", "upper_middle", "high"]
 
 
 # ============================================================
@@ -131,43 +74,49 @@ class CosineSimilarity(layers.Layer):
 
 
 # ============================================================
-# Tower Builders (must match train.py)
+# Schema-based Feature Encoding
 # ============================================================
 
-def _build_student_tower(input_dim: int, embedding_dim: int = 64) -> keras.Model:
-    inp = layers.Input(shape=(input_dim,), dtype=tf.float32, name="student_inputs")
-    x = layers.Dense(128, activation="relu", name="student_dense_128")(inp)
-    x = layers.BatchNormalization(name="student_bn_128")(x)
-    x = layers.Dense(64, activation="relu", name="student_dense_64")(x)
-    x = layers.BatchNormalization(name="student_bn_64")(x)
-    embedding = layers.Dense(embedding_dim, activation=None, name="student_embedding")(x)
-    return keras.Model(inputs=inp, outputs=embedding, name="student_tower")
+def _load_schema(model_dir: Path) -> dict:
+    """Load schema.json from model directory."""
+    schema_path = model_dir / "schema.json"
+    if not schema_path.exists():
+        raise FileNotFoundError(
+            f"Schema not found at {schema_path}. "
+            "Run `python train.py` first."
+        )
+    with open(schema_path) as f:
+        return json.load(f)
 
 
-def _build_scholarship_tower(input_dim: int, embedding_dim: int = 64) -> keras.Model:
-    inp = layers.Input(shape=(input_dim,), dtype=tf.float32, name="scholarship_inputs")
-    x = layers.Dense(128, activation="relu", name="scholarship_dense_128")(inp)
-    x = layers.BatchNormalization(name="scholarship_bn_128")(x)
-    x = layers.Dense(64, activation="relu", name="scholarship_dense_64")(x)
-    x = layers.BatchNormalization(name="scholarship_bn_64")(x)
-    embedding = layers.Dense(embedding_dim, activation=None, name="scholarship_embedding")(x)
-    return keras.Model(inputs=inp, outputs=embedding, name="scholarship_tower")
+def _encode_categorical_from_schema(value, mapping: dict) -> int:
+    """Encode a categorical value using schema mapping."""
+    val = str(value).strip() if value else "unknown"
+    return mapping.get(val, 0)
 
 
-# ============================================================
-# Feature Preprocessing — must match train.py exactly
-# ============================================================
-
-def _encode_categorical(df: pd.DataFrame, col: str) -> tuple[np.ndarray, dict]:
-    """Label-encode a categorical column."""
-    col_vals = df[col].astype(str).fillna("unknown")
-    unique_vals = sorted(col_vals.unique())
-    mapping = {v: i + 1 for i, v in enumerate(unique_vals)}
-    arr = np.zeros(len(df), dtype=np.int32)
-    for val, idx in mapping.items():
-        mask = col_vals == val
-        arr[mask] = idx
-    return arr, mapping
+def _parse_language_proficiency(json_str: Optional[str], language_tests: Optional[list] = None) -> np.ndarray:
+    """Parse language proficiency JSON into fixed-dim vector."""
+    vec = np.zeros(12, dtype=np.float32)
+    if language_tests is None:
+        # Fallback for backwards compatibility
+        language_tests = ["toefl", "ielts", "topik", "jlpt", "delf", "hsk"]
+    try:
+        records = json.loads(json_str) if isinstance(json_str, str) else json_str
+    except (json.JSONDecodeError, TypeError):
+        return vec
+    if not isinstance(records, list):
+        records = [records]
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        test_type = record.get("test_type", "").lower()
+        if test_type in language_tests:
+            idx = language_tests.index(test_type)
+            score = float(record.get("score", 0.0))
+            vec[idx * 2] = max(vec[idx * 2], score)
+            vec[idx * 2 + 1] = 1.0
+    return vec
 
 
 def _encode_list_field(json_str: str, all_values: list) -> np.ndarray:
@@ -187,62 +136,41 @@ def _encode_list_field(json_str: str, all_values: list) -> np.ndarray:
     return vec
 
 
-def _parse_language_proficiency(json_str: Optional[str]) -> np.ndarray:
-    """Parse language proficiency JSON into 12-dim vector."""
-    vec = np.zeros(12, dtype=np.float32)
-    try:
-        records = json.loads(json_str) if isinstance(json_str, str) else json_str
-    except (json.JSONDecodeError, TypeError):
-        return vec
-    if not isinstance(records, list):
-        records = [records]
-    language_tests = ["toefl", "ielts", "topik", "jlpt", "delf", "hsk"]
-    for record in records:
-        if not isinstance(record, dict):
-            continue
-        test_type = record.get("test_type", "").lower()
-        if test_type in language_tests:
-            idx = language_tests.index(test_type)
-            score = float(record.get("score", 0.0))
-            vec[idx * 2] = max(vec[idx * 2], score)
-            vec[idx * 2 + 1] = 1.0
-    return vec
+def prepare_student_features(student_dict: dict, student_schema: dict) -> np.ndarray:
+    """Convert a student dict to packed feature vector using schema.
 
+    Args:
+        student_dict: Dict with student fields matching schema keys.
+        student_schema: Schema from schema.json for students.
 
-def _prepare_student_features(student, student_mapping: dict) -> np.ndarray:
-    """Convert a single Student object to packed feature vector."""
+    Returns:
+        Packed numpy array of shape (feature_dim,)
+    """
     parts = []
 
-    # Categorical fields
-    for col in STUDENT_CATEGORICAL:
-        val = str(getattr(student, col, "") or "unknown")
-        mapping = student_mapping[col]
-        encoded = 0 if val not in mapping else mapping[val]
+    # Categorical fields — uses encoding mapping from training
+    for col in student_schema["categorical"]:
+        val = str(student_dict.get(col, "") or "unknown")
+        encoded = _encode_categorical_from_schema(val, student_schema["_mappings"].get(col, {}))
         parts.append(np.array([encoded], dtype=np.int32))
 
     # Numerical fields
-    for col in STUDENT_NUMERICAL:
-        val = getattr(student, col, 0.0) or 0.0
-        parts.append(np.array([float(val)], dtype=np.float32))
+    for col in student_schema["numerical"]:
+        val = float(student_dict.get(col, 0.0) or 0.0)
+        parts.append(np.array([val], dtype=np.float32))
 
     # Boolean fields (defaults to False if missing)
-    for col in STUDENT_BOOLEAN:
-        val = getattr(student, col, False)
+    for col in student_schema["boolean"]:
+        val = bool(student_dict.get(col, False))
         parts.append(np.array([1.0 if val else 0.0], dtype=np.float32))
 
-    # Language proficiency vector
-    lang_field = getattr(student, "language_proficiency", [])
+    # Language proficiency vector (always 12-dim)
+    lang_field = student_dict.get("language_proficiency", [])
+    lang_tests = student_schema.get("language_tests")
     if isinstance(lang_field, str):
-        lang_vec = _parse_language_proficiency(lang_field)
-    elif isinstance(lang_field, list) and len(lang_field) > 0:
-        first_entry = lang_field[0]
-        if hasattr(first_entry, "test_type"):
-            # List of LanguageProficiency dataclasses → convert to dicts
-            clean_records = [asdict(lp) for lp in lang_field]
-            lang_vec = _parse_language_proficiency(json.dumps(clean_records))
-        else:
-            # Already a list of dicts or strings
-            lang_vec = _parse_language_proficiency(json.dumps(lang_field))
+        lang_vec = _parse_language_proficiency(lang_field, language_tests=lang_tests)
+    elif isinstance(lang_field, list):
+        lang_vec = _parse_language_proficiency(json.dumps(lang_field), language_tests=lang_tests)
     else:
         lang_vec = np.zeros(12, dtype=np.float32)
     parts.append(lang_vec)
@@ -250,63 +178,74 @@ def _prepare_student_features(student, student_mapping: dict) -> np.ndarray:
     return np.hstack(parts).astype(np.float32)
 
 
-def prepare_scholarship_features(scholarships, scholarship_mapping: dict) -> np.ndarray:
-    """Convert a list of Scholarship objects to packed feature matrix."""
-    df = pd.DataFrame([asdict(s) for s in scholarships])
+def prepare_scholarship_features(scholarships_list: list, sch_schema: dict) -> np.ndarray:
+    """Convert scholarship dicts to packed feature matrix using schema.
 
-    # Flatten nested fields
-    if "language_requirements" in df.columns:
-        df["language_requirements"] = df["language_requirements"].apply(
-            lambda x: json.dumps(x) if isinstance(x, list) else str(x)
-        )
-    if "selection_criteria" in df.columns:
-        df["selection_criteria"] = df["selection_criteria"].apply(
-            lambda x: json.dumps(asdict(x)) if hasattr(x, 'asdict') else str(x)
-        )
+    Args:
+        scholarships_list: List of dicts with scholarship fields.
+        sch_schema: Schema from schema.json for scholarships.
 
-    sch_parts = []
+    Returns:
+        Packed numpy array of shape (n_scholarships, feature_dim)
+    """
+    parts = []
 
-    for col in SCHOLARSHIP_CATEGORICAL:
-        arr, _ = _encode_categorical(df, col)
-        sch_parts.append(arr[:, None])
+    # Categorical fields
+    for col in sch_schema["categorical"]:
+        values = [str(s.get(col, "")) for s in scholarships_list]
+        mapping = sch_schema["_mappings"].get(col, {})
+        encoded = np.array([mapping.get(v, 0) for v in values], dtype=np.int32)
+        parts.append(encoded[:, None])
 
-    for col in SCHOLARSHIP_NUMERICAL:
-        if col in df.columns:
-            sch_parts.append(df[col].values.astype(np.float32)[:, None])
-        else:
-            sch_parts.append(np.zeros((len(scholarships), 1), dtype=np.float32))
+    # Numerical fields
+    for col in sch_schema["numerical"]:
+        vals = [float(s.get(col, 0.0) or 0.0) for s in scholarships_list]
+        parts.append(np.array(vals, dtype=np.float32)[:, None])
 
-    for col in SCHOLARSHIP_BOOLEAN:
-        if col in df.columns:
-            sch_parts.append(df[col].astype(float).fillna(0).values[:, None])
-        else:
-            sch_parts.append(np.zeros((len(scholarships), 1), dtype=np.float32))
+    # Boolean fields (defaults to False if missing)
+    for col in sch_schema["boolean"]:
+        vals = [bool(s.get(col, False)) for s in scholarships_list]
+        parts.append(np.array(vals, dtype=np.float32)[:, None])
 
-    # List vector — matches original train.py behavior (which has a subtle bug where
-    # _make_list_vectors ignores the `offset` param and always takes vec[:dim])
-    list_vec = np.zeros((len(scholarships), LIST_VECTOR_DIM), dtype=np.float32)
+    # List vector: countries + tracks + fields
+    all_values = sch_schema["all_list_values"]
+    list_vec = np.zeros((len(scholarships_list), sch_schema["list_vector_dim"]), dtype=np.float32)
 
-    for i, s in enumerate(scholarships):
-        eligible_nat = getattr(s, "eligible_nationalities", [])
+    for i, s in enumerate(scholarships_list):
+        # Eligible nationalities → country positions
+        eligible_nat = s.get("eligible_nationalities", [])
         if isinstance(eligible_nat, str):
-            eligible_nat = json.loads(eligible_nat) if eligible_nat else []
-        nat_vec = _encode_list_field(json.dumps(eligible_nat), ALL_LIST_VALUES)
-        list_vec[i, :LIST_COUNTRY_DIM] = nat_vec[:LIST_COUNTRY_DIM]
+            try:
+                eligible_nat = json.loads(eligible_nat)
+            except (json.JSONDecodeError, TypeError):
+                eligible_nat = []
+        nat_vec = _encode_list_field(json.dumps(eligible_nat), all_values)
+        list_vec[i, :sch_schema["list_country_dim"]] = nat_vec[:sch_schema["list_country_dim"]]
 
-        eligible_tracks = getattr(s, "eligible_high_school_tracks", [])
+        # Eligible tracks → track positions
+        eligible_tracks = s.get("eligible_high_school_tracks", [])
         if isinstance(eligible_tracks, str):
-            eligible_tracks = json.loads(eligible_tracks) if eligible_tracks else []
-        track_vec = _encode_list_field(json.dumps(eligible_tracks), ALL_LIST_VALUES)
-        list_vec[i, LIST_COUNTRY_DIM:LIST_COUNTRY_DIM + LIST_TRACK_DIM] += track_vec[:LIST_TRACK_DIM]
+            try:
+                eligible_tracks = json.loads(eligible_tracks)
+            except (json.JSONDecodeError, TypeError):
+                eligible_tracks = []
+        track_vec = _encode_list_field(json.dumps(eligible_tracks), all_values)
+        list_vec[i, sch_schema["list_country_dim"]:sch_schema["list_country_dim"] + sch_schema["list_track_dim"]] += \
+            track_vec[:sch_schema["list_track_dim"]]
 
-        eligible_fields = getattr(s, "eligible_fields", [])
+        # Eligible fields → field positions
+        eligible_fields = s.get("eligible_fields", [])
         if isinstance(eligible_fields, str):
-            eligible_fields = json.loads(eligible_fields) if eligible_fields else []
-        field_vec = _encode_list_field(json.dumps(eligible_fields), ALL_LIST_VALUES)
-        list_vec[i, LIST_COUNTRY_DIM + LIST_TRACK_DIM:] += field_vec[:LIST_FIELD_DIM]
+            try:
+                eligible_fields = json.loads(eligible_fields)
+            except (json.JSONDecodeError, TypeError):
+                eligible_fields = []
+        field_vec = _encode_list_field(json.dumps(eligible_fields), all_values)
+        list_vec[i, sch_schema["list_country_dim"] + sch_schema["list_track_dim"]:] += \
+            field_vec[:sch_schema["list_field_dim"]]
 
-    sch_parts.append(list_vec)
-    return np.hstack(sch_parts).astype(np.float32)
+    parts.append(list_vec)
+    return np.hstack(parts).astype(np.float32)
 
 
 # ============================================================
@@ -405,57 +344,12 @@ def _check_language_requirements(student, scholarship) -> bool:
     return True
 
 
-def _check_return_home(student, scholarship) -> bool:
-    """If scholarship requires return-home, student must be willing."""
-    requires = getattr(scholarship, "requires_return_home_country", False)
-    if not requires:
-        return True
-    return bool(getattr(student, "willing_to_return_home", True))
-
-
-def _check_financial_need(student, scholarship) -> bool:
-    """If scholarship requires financial need, student's income must be low enough."""
-    requires = getattr(scholarship, "requires_financial_need", False)
-    if not requires:
-        return True
-
-    max_cat = str(getattr(scholarship, "max_family_income_category", "high")).lower()
-    student_cat = str(getattr(student, "family_income_category", "middle")).lower()
-
-    max_idx = INCOME_ORDER.index(max_cat) if max_cat in INCOME_ORDER else len(INCOME_ORDER) - 1
-    student_idx = INCOME_ORDER.index(student_cat) if student_cat in INCOME_ORDER else len(INCOME_ORDER) - 1
-
-    return student_idx <= max_idx
-
-
 def _check_academic_thresholds(student, scholarship) -> bool:
     """Minimum report card and major subject averages."""
     min_rc = getattr(scholarship, "min_report_card_average", 0)
     min_major = getattr(scholarship, "min_major_subject_average", 0)
     return (float(getattr(student, "overall_report_card_average", 0)) >= min_rc and
             float(getattr(student, "major_subject_average", 0)) >= min_major)
-
-
-def _check_eligible_fields(student, scholarship) -> bool:
-    """Student's intended career track should align with eligible fields."""
-    eligible = getattr(scholarship, "eligible_fields", [])
-    if not eligible:
-        return True
-    # This is a soft check — we don't hard-filter on this
-    # The two-tower model will capture this signal
-    return True
-
-
-def _check_high_school_track_eligible(student, scholarship) -> bool:
-    """Student's high school track must be eligible."""
-    track = str(getattr(student, "high_school_track", "")).lower()
-    tracks = getattr(scholarship, "eligible_high_school_tracks", [])
-    if isinstance(tracks, str):
-        try:
-            tracks = json.loads(tracks)
-        except (json.JSONDecodeError, TypeError):
-            tracks = [tracks]
-    return track in [str(t).lower() for t in tracks]
 
 
 def apply_hard_filter(student, scholarship) -> bool:
@@ -506,15 +400,21 @@ class InferenceResult:
 
 
 class InferenceEngine:
-    """Loads trained model and provides recommendation inference."""
+    """Loads trained model and schema, provides recommendation inference."""
 
     def __init__(self, model_dir: Optional[Path] = None):
-        """Initialize inference engine with trained model and mappings."""
+        """Initialize inference engine with trained model and schema.
+
+        Args:
+            model_dir: Path to directory containing best_model.keras + schema.json.
+                       Defaults to v1/models/
+        """
         if model_dir is None:
-            model_dir = _MODEL_DIR
+            model_dir = _SCRIPT_DIR / "models"
 
         self.model_path = model_dir / "best_model.keras"
-        self.mappings_path = model_dir / "mappings.pkl"
+        self.schema = _load_schema(model_dir)
+        self._mappings_path = model_dir / "mappings.pkl"
         self._load()
 
     def _load(self):
@@ -532,13 +432,17 @@ class InferenceEngine:
         print(f"Loaded model from {self.model_path}")
 
     def _load_mappings(self):
-        if not self.mappings_path.exists():
+        if not self._mappings_path.exists():
             raise FileNotFoundError(
-                f"Mappings not found at {self.mappings_path}. "
+                f"Mappings not found at {self._mappings_path}. "
                 "Run `python train.py` first."
             )
-        with open(self.mappings_path, "rb") as f:
-            self._mappings = pickle.load(f)
+        with open(self._mappings_path, "rb") as f:
+            mappings = pickle.load(f)
+
+        # Attach mappings to schema for feature encoding
+        self.schema["student"]["_mappings"] = mappings["student"]
+        self.schema["scholarship"]["_mappings"] = mappings["scholarship"]
 
     def recommend(
         self,
@@ -552,8 +456,8 @@ class InferenceEngine:
 
         Args:
             student_id: Unique student identifier.
-            student: Student dataclass object.
-            scholarships: List of Scholarship objects.
+            student: Student dataclass object or dict with matching fields.
+            scholarships: List of Scholarship objects or dicts.
             top_k: Number of recommendations to return.
             use_hard_filter: If True, apply Stage 1 hard filter before model scoring.
                 Set False to let the two-tower model handle all filtering via learned scores.
@@ -580,9 +484,14 @@ class InferenceEngine:
                 recommendations=[],
             )
 
+        # Convert Student/scholarship objects to dicts for feature encoding
+        from dataclasses import asdict
+        student_dict = asdict(student) if hasattr(student, '__dataclass_fields__') else student
+        eligible_dicts = [asdict(s) if hasattr(s, '__dataclass_fields__') else s for s in eligible]
+
         # Stage 2: Two-tower scoring
-        student_features = _prepare_student_features(student, self._mappings["student"])
-        sch_features = prepare_scholarship_features(eligible, self._mappings["scholarship"])
+        student_features = prepare_student_features(student_dict, self.schema["student"])
+        sch_features = prepare_scholarship_features(eligible_dicts, self.schema["scholarship"])
 
         # Repeat student features to match batch size of scholarships (broadcast inference)
         n_candidates = len(eligible)
@@ -640,7 +549,8 @@ def _load_scholarships_csv(path: str) -> pd.DataFrame:
 
 def main():
     parser = argparse.ArgumentParser(description="Run recommendation inference")
-    parser.add_argument("--student-id", required=True, help="Student ID (e.g., STU_000001)")
+    parser.add_argument("--student-id", type=str, help="Student ID (e.g., STU_000001)")
+    parser.add_argument("--input", "-i", type=str, help="JSON file with student profile")
     parser.add_argument("--top-k", type=int, default=5, help="Number of recommendations")
     parser.add_argument("--models-dir", type=str, default=None, help="Path to models directory")
     parser.add_argument(
@@ -650,6 +560,10 @@ def main():
     )
     args = parser.parse_args()
 
+    if not args.student_id and not args.input:
+        print("Error: provide --student-id or --input")
+        return
+
     engine = InferenceEngine(model_dir=Path(args.models_dir) if args.models_dir else None)
 
     # Load data
@@ -657,46 +571,51 @@ def main():
     students_df = pd.read_csv(datasets_dir / "students.csv")
     scholarships_df = pd.read_csv(datasets_dir / "scholarships.csv")
 
-    # Find student by ID
-    mask = students_df["student_id"] == args.student_id
-    if not mask.any():
-        print(f"Student {args.student_id} not found in dataset.")
-        return
+    # Find student by ID or load from JSON file
+    if args.input:
+        with open(args.input) as f:
+            stu_dict = json.load(f)
+        student_id = stu_dict.get("student_id", "unknown")
+    else:
+        mask = students_df["student_id"] == args.student_id
+        if not mask.any():
+            print(f"Student {args.student_id} not found in dataset.")
+            return
+        stu_dict = students_df[mask].iloc[0].to_dict()
+        student_id = args.student_id
 
-    stu_row = students_df[mask].iloc[0]
-
-    # Reconstruct Student object (simplified — uses flat CSV data)
+    # Reconstruct Student object (simplified — uses flat CSV/JSON data)
     from src.schemas import Student, LanguageProficiency
-    lang_records = json.loads(stu_row["language_proficiency"]) if isinstance(stu_row.get("language_proficiency"), str) else []
+    lang_records = json.loads(stu_dict["language_proficiency"]) if isinstance(stu_dict.get("language_proficiency"), str) else []
     student = Student(
-        student_id=stu_row["student_id"],
-        nationality=stu_row["nationality"],
-        age=int(stu_row["age"]),
+        student_id=stu_dict["student_id"],
+        nationality=stu_dict["nationality"],
+        age=int(stu_dict["age"]),
         current_degree_level="high_school",
         target_degree_level="bachelors",
-        high_school_track=stu_row["high_school_track"],
-        school_name=stu_row["school_name"],
-        overall_report_card_average=float(stu_row["overall_report_card_average"]),
-        math_score=float(stu_row["math_score"]),
-        english_score=float(stu_row["english_score"]),
-        major_subject_average=float(stu_row["major_subject_average"]),
+        high_school_track=stu_dict["high_school_track"],
+        school_name=stu_dict.get("school_name", ""),
+        overall_report_card_average=float(stu_dict["overall_report_card_average"]),
+        math_score=float(stu_dict["math_score"]),
+        english_score=float(stu_dict["english_score"]),
+        major_subject_average=float(stu_dict["major_subject_average"]),
         language_proficiency=[LanguageProficiency(**lp) for lp in lang_records],
-        olympiad_level=stu_row.get("olympiad_level", "none"),
-        olympiad_subjects=json.loads(stu_row.get("olympiad_subjects", "[]")) if isinstance(stu_row.get("olympiad_subjects"), str) else stu_row.get("olympiad_subjects", []),
-        leadership_experience_count=int(stu_row.get("leadership_experience_count", 0)),
-        volunteer_experience_count=int(stu_row.get("volunteer_experience_count", 0)),
-        competition_wins_count=int(stu_row.get("competition_wins_count", 0)),
-        school_tier=stu_row.get("school_tier", "unknown"),
-        family_income_category=stu_row.get("family_income_category", "middle"),
-        from_underrepresented_region=bool(stu_row.get("from_underrepresented_region", False)),
-        intended_career_track=stu_row.get("intended_career_track", ""),
-        willing_to_return_home=bool(stu_row.get("willing_to_return_home", True)),
-        target_countries=json.loads(stu_row.get("target_countries", "[]")) if isinstance(stu_row.get("target_countries"), str) else stu_row.get("target_countries", []),
-        personal_statement=stu_row.get("personal_statement", ""),
-        achievements_narrative=stu_row.get("achievements_narrative", ""),
-        future_goals=stu_row.get("future_goals", ""),
-        needs_full_funding=bool(stu_row.get("needs_full_funding", False)),
-        can_self_fund_living=bool(stu_row.get("can_self_fund_living", False)),
+        olympiad_level=stu_dict.get("olympiad_level", "none"),
+        olympiad_subjects=json.loads(stu_dict.get("olympiad_subjects", "[]")) if isinstance(stu_dict.get("olympiad_subjects"), str) else stu_dict.get("olympiad_subjects", []),
+        leadership_experience_count=int(stu_dict.get("leadership_experience_count", 0)),
+        volunteer_experience_count=int(stu_dict.get("volunteer_experience_count", 0)),
+        competition_wins_count=int(stu_dict.get("competition_wins_count", 0)),
+        school_tier=stu_dict.get("school_tier", "unknown"),
+        family_income_category=stu_dict.get("family_income_category", "middle"),
+        from_underrepresented_region=bool(stu_dict.get("from_underrepresented_region", False)),
+        intended_career_track=stu_dict.get("intended_career_track", ""),
+        willing_to_return_home=bool(stu_dict.get("willing_to_return_home", True)),
+        target_countries=json.loads(stu_dict.get("target_countries", "[]")) if isinstance(stu_dict.get("target_countries"), str) else stu_dict.get("target_countries", []),
+        personal_statement=stu_dict.get("personal_statement", ""),
+        achievements_narrative=stu_dict.get("achievements_narrative", ""),
+        future_goals=stu_dict.get("future_goals", ""),
+        needs_full_funding=bool(stu_dict.get("needs_full_funding", False)),
+        can_self_fund_living=bool(stu_dict.get("can_self_fund_living", False)),
     )
 
     # Reconstruct Scholarship objects from CSV rows
@@ -743,7 +662,7 @@ def main():
 
     # Run inference
     result = engine.recommend(
-        args.student_id, student, scholarships,
+        student_id, student, scholarships,
         top_k=args.top_k,
         use_hard_filter=not args.no_hard_filter,
     )

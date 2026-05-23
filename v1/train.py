@@ -457,6 +457,53 @@ def train(args):
         pickle.dump(mappings, f)
     print(f"Mappings saved to {OUTPUT_DIR}/mappings.pkl")
 
+    # --- Save schema for inference ---
+    all_countries = [
+        "china", "india", "indonesia", "japan", "malaysia",
+        "philippines", "singapore", "south_korea", "thailand", "vietnam",
+        "france", "germany", "netherlands", "sweden", "uk",
+        "switzerland", "canada", "usa", "argentina", "brazil",
+        "chile", "egypt", "kenya", "morocco", "nigeria",
+        "south_africa", "australia", "new_zealand",
+    ]
+    all_tracks = ["science", "social_studies", "languages", "religion", "vocational"]
+    all_fields = [
+        "computer_science", "engineering", "medicine", "business",
+        "economics", "law", "education", "arts_humanities",
+        "social_sciences", "agriculture", "mathematics", "physics",
+        "chemistry", "biology",
+    ]
+
+    schema = {
+        "student": {
+            "categorical": STUDENT_CATEGORICAL,
+            "numerical": STUDENT_NUMERICAL,
+            "boolean": STUDENT_BOOLEAN,
+            "language_dim": 12,
+            "language_tests": ["toefl", "ielts", "topik", "jlpt", "delf", "hsk"],
+            "input_dim": int(student_X.shape[1]),
+        },
+        "scholarship": {
+            "categorical": SCHOLARSHIP_CATEGORICAL,
+            "numerical": SCHOLARSHIP_NUMERICAL,
+            "boolean": SCHOLARSHIP_BOOLEAN,
+            "list_vector_dim": int(LIST_VECTOR_DIM),
+            "list_country_dim": LIST_COUNTRY_DIM,
+            "list_track_dim": LIST_TRACK_DIM,
+            "list_field_dim": LIST_FIELD_DIM,
+            "all_countries": all_countries,
+            "all_tracks": all_tracks,
+            "all_fields": all_fields,
+            "all_list_values": all_countries + all_tracks + all_fields,
+            "input_dim": int(sch_X.shape[1]),
+        },
+    }
+
+    schema_path = os.path.join(OUTPUT_DIR, "schema.json")
+    with open(schema_path, "w") as f:
+        json.dump(schema, f, indent=2)
+    print(f"Schema saved to {schema_path}")
+
     return model, history
 
 
