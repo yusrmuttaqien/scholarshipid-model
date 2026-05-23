@@ -31,6 +31,7 @@ import pandas as pd
 # Ensure project root is on sys.path so `from src.*` works when
 # running this file from any subdirectory (e.g. python v1/generator_two_tower.py)
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
+_SCRIPT_DIR = Path(__file__).resolve().parent
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 

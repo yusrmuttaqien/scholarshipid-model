@@ -4,6 +4,8 @@ venv
 datasets_single_pool
 datasets_two_tower
 datasets
+*/datasets_two_tower
+*/datasets
 .DS_Store
 PROJECT_BRIEF.md
 SCHEMA_MIGRATION_NOTES.md

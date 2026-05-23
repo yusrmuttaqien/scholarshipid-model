@@ -439,7 +439,9 @@ def train(args):
     binary_true = (test_true >= 0.5).astype(int)
     binary_pred = (test_preds >= 0.5).astype(int)
     accuracy = np.mean(binary_true == binary_pred)
-    print(f"\nBinary Accuracy (threshold=0.5): {accuracy * 100:.2f}%")
+    n_correct = int((binary_true == binary_pred).sum())
+    n_total = len(binary_true)
+    print(f"\nBinary Accuracy (threshold=0.5): {accuracy * 100:.2f}% ({n_correct}/{n_total})")
 
     # --- Save model ---
     final_path = os.path.join(OUTPUT_DIR, "model.keras")
