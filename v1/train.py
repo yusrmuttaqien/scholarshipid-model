@@ -7,6 +7,8 @@ and trains a two-tower neural network for relevance scoring.
 Usage:
     python train.py
     python train.py --epochs 50 --batch-size 256
+    # Feedback-loop retraining (after running feedback_loop.py):
+    python train.py --pairs-file v1/datasets/pairs_feedback.csv --score-column adjusted_score
 """
 
 import argparse
@@ -298,15 +300,15 @@ def train(args):
     # Map IDs to indices
     train_stu_idx = np.array([stu_id_to_idx[sid] for sid in train_pairs["student_id"]], dtype=np.int32)
     train_sch_idx = np.array([sch_id_to_idx[sid] for sid in train_pairs["scholarship_id"]], dtype=np.int32)
-    train_labels = train_pairs["relevance_score"].values.astype(np.float32)
+    train_labels = train_pairs[args.score_column].values.astype(np.float32)
 
     val_stu_idx = np.array([stu_id_to_idx[sid] for sid in val_pairs["student_id"]], dtype=np.int32)
     val_sch_idx = np.array([sch_id_to_idx[sid] for sid in val_pairs["scholarship_id"]], dtype=np.int32)
-    val_labels = val_pairs["relevance_score"].values.astype(np.float32)
+    val_labels = val_pairs[args.score_column].values.astype(np.float32)
 
     test_stu_idx = np.array([stu_id_to_idx[sid] for sid in test_pairs["student_id"]], dtype=np.int32)
     test_sch_idx = np.array([sch_id_to_idx[sid] for sid in test_pairs["scholarship_id"]], dtype=np.int32)
-    test_labels = test_pairs["relevance_score"].values.astype(np.float32)
+    test_labels = test_pairs[args.score_column].values.astype(np.float32)
 
     # --- Build datasets ---
     print("Building datasets...")
@@ -431,7 +433,8 @@ def main():
     parser = argparse.ArgumentParser(description="Train two-tower recommendation model")
     parser.add_argument("--students-file", default=None, help="Path to students CSV")
     parser.add_argument("--scholarships-file", default=None, help="Path to scholarships CSV")
-    parser.add_argument("--pairs-file", default=None, help="Path to pairs CSV")
+    parser.add_argument("--pairs-file", default=None, help="Path to pairs CSV (use adjusted_score column if present)")
+    parser.add_argument("--score-column", default="relevance_score", help="Column to use as labels (default: relevance_score; use adjusted_score for feedback-trained pairs)")
     parser.add_argument("--schema-file", default=None, help="Path to schema JSON")
     parser.add_argument("--output-dir", default=None, help="Directory for outputs")
     parser.add_argument("--epochs", type=int, default=30)

@@ -159,9 +159,10 @@ python train.py --epochs 50 --batch-size 128
 
 # Full external file control (e.g., feedback-loop retraining)
 python train.py \
+  --pairs-file v1/datasets/pairs_feedback.csv \
+  --score-column adjusted_score \
   --students-file v1/datasets/students.csv \
   --scholarships-file v1/datasets/scholarships.csv \
-  --pairs-file v1/datasets/pairs_feedback.csv \
   --schema-file v1/models/schema.json \
   --output-dir v1/models/
 ```
@@ -334,6 +335,49 @@ See `example_student.json` for a complete example. Required fields are marked wi
 ```
 
 Supported test types: `toefl`, `ielts`, `topik`, `jlpt`, `delf`, `hsk`. These are defined in `schema.json` and can be extended without changing code.
+
+## Feedback Loop (`feedback_loop.py`)
+
+The feedback loop adjusts training pairs using user interaction signals, allowing the model to learn from real-world behavior.
+
+### How it works
+
+1. Load `pairs.csv` (original relevance scores from generator) + `feedback.csv` (user signals: view/click/apply/reject)
+2. For each unique `(student, scholarship)` pair, aggregate all feedback into a single signal
+3. Blend the original score with the feedback signal: `adjusted_score = α * original + (1 - α) * feedback`
+4. Write adjusted pairs to a new CSV for retraining
+
+### Usage
+
+```bash
+# Generate adjusted pairs from feedback data
+python v1/feedback_loop.py \
+  --pairs-file v1/datasets/pairs.csv \
+  --feedback-file v1/datasets/feedback.csv \
+  --output-file v1/datasets/pairs_feedback.csv \
+  --alpha 0.5
+
+# Retrain with adjusted pairs (specify score column)
+python train.py --pairs-file v1/datasets/pairs_feedback.csv --score-column adjusted_score
+```
+
+### Parameters
+
+- `--alpha` (default: 0.5): Blend ratio. Lower = more aggressive feedback integration
+  - `α = 1.0`: Use original scores only (no feedback)
+  - `α = 0.0`: Use feedback signal only
+  - `α = 0.5`: Equal blend (recommended starting point)
+
+### Feedback Signals
+
+| Type | Weight | Meaning |
+|------|--------|---------|
+| view | 1.0 | Student viewed the scholarship page |
+| click | 2.0 | Student clicked on the scholarship |
+| apply | 3.0 | Student applied to the scholarship |
+| reject | -1.0 | Student rejected the recommendation |
+
+Signals are normalized to [0, 1] and blended with original scores. Pairs without feedback keep their original score unchanged.
 
 ## Portability
 
