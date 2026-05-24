@@ -4,19 +4,21 @@ Two-stage pipeline:
   Stage 1: Hard filter (deterministic eligibility checks)
   Stage 2: Two-tower neural network scoring
 
-Usage as CLI:
-    python inference.py --input student.json --top-k 5
-    python inference.py --student-id STU_000001 --top-k 5
+Usage as CLI (all paths explicit, no auto-loading):
+    python v1/inference.py \
+      --input student.json \
+      --models-dir /path/to/models/ \
+      --schema-file /path/to/schema.json \
+      --students-file students.csv \
+      --scholarships-file scholarships.csv
 
 Usage as library:
     from v1.inference import InferenceEngine
-    engine = InferenceEngine()
+    engine = InferenceEngine(
+        model_dir=Path("/path/to/models"),
+        schema_file="/path/to/schema.json",
+    )
     recommendations = engine.recommend(student, scholarships)
-
-Schema-based portability:
-    The engine loads schema.json (saved by train.py) which defines column names,
-    types, and list vector structure. No hardcoded constants needed — inference
-    adapts automatically to whatever schema the model was trained with.
 """
 
 import argparse
@@ -76,18 +78,6 @@ class CosineSimilarity(layers.Layer):
 # ============================================================
 # Schema-based Feature Encoding
 # ============================================================
-
-def _load_schema(model_dir: Path) -> dict:
-    """Load schema.json from model directory."""
-    schema_path = model_dir / "schema.json"
-    if not schema_path.exists():
-        raise FileNotFoundError(
-            f"Schema not found at {schema_path}. "
-            "Run `python train.py` first."
-        )
-    with open(schema_path) as f:
-        return json.load(f)
-
 
 def _encode_categorical_from_schema(value, mapping: dict) -> int:
     """Encode a categorical value using schema mapping."""
@@ -402,19 +392,22 @@ class InferenceResult:
 class InferenceEngine:
     """Loads trained model and schema, provides recommendation inference."""
 
-    def __init__(self, model_dir: Optional[Path] = None):
+    def __init__(self, model_dir: Path, schema_file: str):
         """Initialize inference engine with trained model and schema.
 
         Args:
-            model_dir: Path to directory containing best_model.keras + schema.json.
-                       Defaults to v1/models/
+            model_dir: Path to directory containing best_model.keras + mappings.pkl.
+            schema_file: Path to schema JSON file (defines feature structure).
         """
-        if model_dir is None:
-            model_dir = _SCRIPT_DIR / "models"
-
         self.model_path = model_dir / "best_model.keras"
-        self.schema = _load_schema(model_dir)
         self._mappings_path = model_dir / "mappings.pkl"
+
+        schema_path = Path(schema_file)
+        if not schema_path.exists():
+            raise FileNotFoundError(f"Schema not found at {schema_path}")
+        with open(schema_path) as f:
+            self.schema = json.load(f)
+
         self._load()
 
     def _load(self):
@@ -446,7 +439,6 @@ class InferenceEngine:
 
     def recommend(
         self,
-        student_id: str,
         student,
         scholarships: list,
         top_k: int = 5,
@@ -455,8 +447,8 @@ class InferenceEngine:
         """Run two-stage recommendation pipeline.
 
         Args:
-            student_id: Unique student identifier.
-            student: Student dataclass object or dict with matching fields.
+            student: Student dict or dataclass with matching fields.
+                The web team sends this as a JSON profile — no CSV lookup needed.
             scholarships: List of Scholarship objects or dicts.
             top_k: Number of recommendations to return.
             use_hard_filter: If True, apply Stage 1 hard filter before model scoring.
@@ -474,12 +466,12 @@ class InferenceEngine:
         else:
             eligible = list(scholarships)
 
-        filtered_ids = {s.scholarship_id for s in eligible}
+        filtered_ids = {getattr(s, "scholarship_id", None) for s in eligible}
 
         # If no scholarships pass the hard filter (or empty input), return empty result
         if not eligible:
             return InferenceResult(
-                student_id=student_id,
+                student_id=getattr(student, "student_id", ""),
                 student_name=getattr(student, "school_name", None),
                 recommendations=[],
             )
@@ -517,7 +509,7 @@ class InferenceEngine:
             ))
 
         return InferenceResult(
-            student_id=student_id,
+            student_id=getattr(student, "student_id", ""),
             student_name=getattr(student, "school_name", None),
             recommendations=recommendations,
         )
@@ -549,10 +541,12 @@ def _load_scholarships_csv(path: str) -> pd.DataFrame:
 
 def main():
     parser = argparse.ArgumentParser(description="Run recommendation inference")
-    parser.add_argument("--student-id", type=str, help="Student ID (e.g., STU_000001)")
-    parser.add_argument("--input", "-i", type=str, help="JSON file with student profile")
+    parser.add_argument("--input", "-i", type=str, required=True, help="JSON file with student profile (single student)")
     parser.add_argument("--top-k", type=int, default=5, help="Number of recommendations")
-    parser.add_argument("--models-dir", type=str, default=None, help="Path to models directory")
+    parser.add_argument("--models-dir", type=str, required=True, help="Path to models directory (contains best_model.keras, mappings.pkl)")
+    parser.add_argument("--schema-file", type=str, required=True, help="Path to schema JSON file")
+    parser.add_argument("--students-file", type=str, required=True, help="Path to students CSV")
+    parser.add_argument("--scholarships-file", type=str, required=True, help="Path to scholarships CSV")
     parser.add_argument(
         "--no-hard-filter",
         action="store_true",
@@ -560,29 +554,19 @@ def main():
     )
     args = parser.parse_args()
 
-    if not args.student_id and not args.input:
-        print("Error: provide --student-id or --input")
-        return
+    engine = InferenceEngine(
+        model_dir=Path(args.models_dir),
+        schema_file=args.schema_file,
+    )
 
-    engine = InferenceEngine(model_dir=Path(args.models_dir) if args.models_dir else None)
+    # Load external datasets (all paths required via flags)
+    students_df = pd.read_csv(args.students_file)
+    scholarships_df = pd.read_csv(args.scholarships_file)
 
-    # Load data
-    datasets_dir = _SCRIPT_DIR / "datasets"
-    students_df = pd.read_csv(datasets_dir / "students.csv")
-    scholarships_df = pd.read_csv(datasets_dir / "scholarships.csv")
-
-    # Find student by ID or load from JSON file
-    if args.input:
-        with open(args.input) as f:
-            stu_dict = json.load(f)
-        student_id = stu_dict.get("student_id", "unknown")
-    else:
-        mask = students_df["student_id"] == args.student_id
-        if not mask.any():
-            print(f"Student {args.student_id} not found in dataset.")
-            return
-        stu_dict = students_df[mask].iloc[0].to_dict()
-        student_id = args.student_id
+    # Load single student profile from JSON file
+    with open(args.input) as f:
+        stu_dict = json.load(f)
+    student_id = stu_dict.get("student_id", "unknown")
 
     # Reconstruct Student object (simplified — uses flat CSV/JSON data)
     from src.schemas import Student, LanguageProficiency
@@ -660,10 +644,9 @@ def main():
             target_recipient_profile=row.get("target_recipient_profile", ""),
         ))
 
-    # Run inference
+    # Run inference — student is already a dict from the JSON input
     result = engine.recommend(
-        student_id, student, scholarships,
-        top_k=args.top_k,
+        student, scholarships, top_k=args.top_k,
         use_hard_filter=not args.no_hard_filter,
     )
 

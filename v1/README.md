@@ -115,7 +115,7 @@ v1/
 │                               # - InferenceEngine class
 │                               # - apply_hard_filter()
 │                               # - Feature encoding functions
-│                               # - CLI with --student-id / --input
+│                               # - CLI with --input (all paths explicit)
 │
 ├── generator.py                # Synthetic data generation
 │                               # - TwoTowerDatasetGenerator class
@@ -140,22 +140,33 @@ v1/
 
 ### What it does
 
-1. **Loads** `students.csv`, `scholarships.csv`, and `pairs.csv` from `datasets/`
-2. **Preprocesses features** using pandas: label-encodes categoricals, normalizes numericals, builds list vectors (countries, tracks, fields)
-3. **Splits data** by timestamp (70% train / 15% val / 15% test)
-4. **Builds two-tower model**: student tower (64-dim embedding) + scholarship tower (64-dim embedding) → CosineSimilarity layer → sigmoid output
-5. **Trains** with MSE loss, early stopping on validation MAE, ReduceLROnPlateau
-6. **Saves artifacts**: `best_model.keras`, `schema.json`, `mappings.pkl`
+1. **Loads schema** from `schema.json` (column names, types, list vector structure)
+2. **Loads** `students.csv`, `scholarships.csv`, and `pairs.csv` from `datasets/` (or custom paths via CLI flags)
+3. **Preprocesses features** using pandas: label-encodes categoricals, normalizes numericals, builds list vectors (countries, tracks, fields) — all driven by the schema
+4. **Splits data** by timestamp (70% train / 15% val / 15% test)
+5. **Builds two-tower model**: student tower (64-dim embedding) + scholarship tower (64-dim embedding) → CosineSimilarity layer → sigmoid output
+6. **Trains** with MSE loss, early stopping on validation MAE, ReduceLROnPlateau
+7. **Saves artifacts**: `best_model.keras`, `schema.json` (updated with actual input dims), `mappings.pkl`
 
 ### Usage
 
 ```bash
-# Use defaults (30 epochs, batch size 256)
+# Use defaults (30 epochs, batch size 256, reads from v1/datasets/ and outputs to v1/models/)
 python train.py
 
 # Custom hyperparameters
 python train.py --epochs 50 --batch-size 128
+
+# Full external file control (e.g., feedback-loop retraining)
+python train.py \
+  --students-file v1/datasets/students.csv \
+  --scholarships-file v1/datasets/scholarships.csv \
+  --pairs-file v1/datasets/pairs_feedback.csv \
+  --schema-file v1/models/schema.json \
+  --output-dir v1/models/
 ```
+
+> **External file paths**: All dataset files and the schema can be specified via CLI flags. When omitted, they default to `v1/datasets/` for inputs and `v1/models/` for outputs. This makes it easy to retrain with adjusted datasets (e.g., from feedback) without modifying code.
 
 ### Model Architecture
 
@@ -245,18 +256,20 @@ scholarship_features = [
 
 ```python
 from v1.inference import InferenceEngine, Recommendation, InferenceResult
+from pathlib import Path
 
-# Initialize engine
-engine = InferenceEngine()  # loads from v1/models/ by default
-engine = InferenceEngine(model_dir=Path("/path/to/models"))
+# Initialize engine — all paths explicit
+engine = InferenceEngine(
+    model_dir=Path("v1/models"),
+    schema_file="v1/models/schema.json",
+)
 
-# Run recommendation
+# Run recommendation — student is a dict from your JSON input
 result = engine.recommend(
-    student_id="STU_000050",
-    student=student_object,       # Student dataclass or dict
-    scholarships=[sch1, sch2],     # List of Scholarship objects
-    top_k=5,                      # Number of recommendations
-    use_hard_filter=True,         # Toggle Stage 1 hard filter
+    student=student_dict,           # Dict with student fields (from JSON input)
+    scholarships=[sch1, sch2],     # List of Scholarship dicts
+    top_k=5,                       # Number of recommendations
+    use_hard_filter=True,          # Toggle Stage 1 hard filter
 )
 
 # Access results
@@ -266,18 +279,35 @@ for rec in result.recommendations:
 
 ### CLI Usage
 
-```bash
-# Run against a student from the dataset
-python v1/inference.py --student-id STU_000050 --top-k 5
+All paths must be provided explicitly — no auto-loading:
 
-# Run against a custom JSON profile
-python v1/inference.py -i example_student.json --top-k 5
+```bash
+# Single student profile (JSON) + external datasets
+python v1/inference.py \
+  --input example_student.json \
+  --models-dir v1/models \
+  --schema-file v1/models/schema.json \
+  --students-file v1/datasets/students.csv \
+  --scholarships-file v1/datasets/scholarships.csv \
+  --top-k 5
 
 # Disable hard filter (let model handle all scoring)
-python v1/inference.py --input student.json --no-hard-filter
+python v1/inference.py \
+  --input v1/example_student.json \
+  --models-dir v1/models \
+  --schema-file v1/models/schema.json \
+  --students-file v1/datasets/students.csv \
+  --scholarships-file v1/datasets/scholarships.csv \
+  --no-hard-filter
 
-# Specify custom models directory
-python v1/inference.py --student-id STU_000050 --models-dir /path/to/models/
+# With custom model directory (e.g., feedback-loop retraining)
+python v1/inference.py \
+  --input student.json \
+  --models-dir /path/to/experiment_A/ \
+  --schema-file /path/to/experiment_A/schema.json \
+  --students-file /path/to/students.csv \
+  --scholarships-file /path/to/scholarships.csv \
+  --top-k 3
 ```
 
 ### Output Format
@@ -349,7 +379,7 @@ The schema file is the single source of truth for feature structure:
 | File | Purpose | Key Exports |
 |------|---------|-------------|
 | `generator.py` | Synthetic data generation | `TwoTowerDatasetGenerator`, `main()` |
-| `train.py` | Training pipeline | `train()`, `prepare_features()`, `build_two_tower_model()` |
+| `train.py` | Training pipeline (external file paths via CLI flags) | `train()`, `prepare_features()`, `build_two_tower_model()` |
 | `inference.py` | Inference engine | `InferenceEngine`, `apply_hard_filter()`, `_parse_language_proficiency()` |
 | `mappings.pkl` | Label encodings from training | `{student: {...}, scholarship: {...}}` |
 | `schema.json` | Feature structure definition | See schema section above |
@@ -366,37 +396,26 @@ python generator.py
 # → generates students.csv, scholarships.csv, pairs.csv, feedback.csv in datasets/
 ```
 
-### Quick Start — Test with Dataset Student
-
-```bash
-cd /path/to/scholarshipid-model
-.venv/bin/python v1/inference.py --student-id STU_000050 --top-k 5
-```
-
-### Quick Start — Custom Profile
-
-```bash
-# Create your student JSON (see example_student.json)
-.venv/bin/python v1/inference.py -i my_student.json --top-k 5 --no-hard-filter
-```
-
 ### Programmatic Usage
 
 ```python
 from v1.inference import InferenceEngine
 import pandas as pd
+from pathlib import Path
 
-engine = InferenceEngine()
+engine = InferenceEngine(
+    model_dir=Path("v1/models"),
+    schema_file="v1/models/schema.json",
+)
 
-# Load data
+# Load data from external files
 students_df = pd.read_csv("v1/datasets/students.csv")
 scholarships_df = pd.read_csv("v1/datasets/scholarships.csv")
 
 # Pick a student and all scholarships
 student = students_df.iloc[0]
 result = engine.recommend(
-    student_id=student["student_id"],
-    student=student,
+    student=student,                    # Student row as dict
     scholarships=scholarships_df.to_dict(orient="records"),
     top_k=5,
 )

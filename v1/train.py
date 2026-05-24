@@ -25,54 +25,9 @@ from tensorflow.keras import layers
 # ============================================================
 
 _SCRIPT_DIR = Path(__file__).resolve().parent
-_DATASET_DIR = _SCRIPT_DIR / "datasets"
-_OUTPUT_DIR = _SCRIPT_DIR / "models"
-
-DATASET_DIR = str(_DATASET_DIR)
-OUTPUT_DIR = str(_OUTPUT_DIR)
-EPOCHS = 30
-BATCH_SIZE = 256
 EMBEDDING_DIM = 64
 LEARNING_RATE = 1e-3
 SEED = 42
-
-# Feature columns (skip text fields for MVP)
-STUDENT_CATEGORICAL = [
-    "nationality", "high_school_track", "school_tier",
-    "family_income_category", "intended_career_track", "olympiad_level",
-]
-STUDENT_NUMERICAL = [
-    "age", "overall_report_card_average", "math_score",
-    "english_score", "major_subject_average",
-    "leadership_experience_count", "volunteer_experience_count",
-    "competition_wins_count",
-]
-STUDENT_BOOLEAN = [
-    "willing_to_return_home", "from_underrepresented_region",
-    "needs_full_funding", "can_self_fund_living",
-]
-
-SCHOLARSHIP_CATEGORICAL = [
-    "host_region", "preferred_school_tier",
-    "career_track_preference", "max_family_income_category",
-]
-SCHOLARSHIP_NUMERICAL = [
-    "min_age", "max_age", "min_report_card_average",
-    "min_major_subject_average", "funding_monthly_stipend",
-    "funding_coverage_count",
-]
-SCHOLARSHIP_BOOLEAN = [
-    "requires_financial_need", "requires_return_home_country",
-    "funding_covers_tuition", "funding_covers_living",
-    "funding_covers_airfare", "funding_covers_insurance",
-    "funding_is_full_funding",
-]
-
-# List vector dimensions
-LIST_COUNTRY_DIM = 27
-LIST_TRACK_DIM = 5
-LIST_FIELD_DIM = 14
-LIST_VECTOR_DIM = LIST_COUNTRY_DIM + LIST_TRACK_DIM + LIST_FIELD_DIM  # 46
 
 
 # ============================================================
@@ -184,8 +139,8 @@ def _encode_list_field(json_str, all_values):
     return vec
 
 
-def _parse_language_proficiency(json_str):
-    """Parse language proficiency JSON into 12-dim vector."""
+def _parse_language_proficiency(json_str, language_tests=None):
+    """Parse language proficiency JSON into fixed-dim vector."""
     vec = np.zeros(12, dtype=np.float32)
     try:
         records = json.loads(json_str) if isinstance(json_str, str) else json_str
@@ -193,13 +148,13 @@ def _parse_language_proficiency(json_str):
         return vec
     if not isinstance(records, list):
         records = [records]
-    language_tests = ["toefl", "ielts", "topik", "jlpt", "delf", "hsk"]
+    tests = language_tests or ["toefl", "ielts", "topik", "jlpt", "delf", "hsk"]
     for record in records:
         if not isinstance(record, dict):
             continue
         test_type = record.get("test_type", "").lower()
-        if test_type in language_tests:
-            idx = language_tests.index(test_type)
+        if test_type in tests:
+            idx = tests.index(test_type)
             score = float(record.get("score", 0.0))
             vec[idx * 2] = max(vec[idx * 2], score)
             vec[idx * 2 + 1] = 1.0
@@ -215,7 +170,7 @@ def _make_list_vectors(scholarships_df, col_name, all_values, offset, dim):
     return vecs
 
 
-def prepare_features(students_df, scholarships_df):
+def prepare_features(students_df, scholarships_df, schema: dict):
     """Preprocess both DataFrames into packed numpy arrays.
 
     Returns:
@@ -227,19 +182,20 @@ def prepare_features(students_df, scholarships_df):
     # --- Students ---
     stu_parts = []
 
-    for col in STUDENT_CATEGORICAL:
+    for col in schema["student"]["categorical"]:
         arr, _ = _encode_categorical(students_df, col)
         stu_parts.append(arr[:, None])  # (N, 1)
 
-    for col in STUDENT_NUMERICAL:
+    for col in schema["student"]["numerical"]:
         stu_parts.append(students_df[col].values.astype(np.float32)[:, None])
 
-    for col in STUDENT_BOOLEAN:
+    for col in schema["student"]["boolean"]:
         stu_parts.append(students_df[col].astype(float).fillna(0).values[:, None])
 
     # Language vector (already (N, 12))
+    lang_tests = schema["student"].get("language_tests")
     lang_vecs = np.stack(
-        [_parse_language_proficiency(s) for s in students_df["language_proficiency"].tolist()]
+        [_parse_language_proficiency(s, language_tests=lang_tests) for s in students_df["language_proficiency"].tolist()]
     )
     stu_parts.append(lang_vecs)
 
@@ -248,53 +204,49 @@ def prepare_features(students_df, scholarships_df):
     # --- Scholarships ---
     sch_parts = []
 
-    for col in SCHOLARSHIP_CATEGORICAL:
+    for col in schema["scholarship"]["categorical"]:
         arr, _ = _encode_categorical(scholarships_df, col)
         sch_parts.append(arr[:, None])  # (N, 1)
 
-    for col in SCHOLARSHIP_NUMERICAL:
+    for col in schema["scholarship"]["numerical"]:
         sch_parts.append(scholarships_df[col].values.astype(np.float32)[:, None])
 
-    for col in SCHOLARSHIP_BOOLEAN:
+    for col in schema["scholarship"]["boolean"]:
         sch_parts.append(scholarships_df[col].astype(float).fillna(0).values[:, None])
 
-    # List vector: 27 countries + 5 tracks + 14 fields = 46
-    all_countries = [
-        "china", "india", "indonesia", "japan", "malaysia",
-        "philippines", "singapore", "south_korea", "thailand", "vietnam",
-        "france", "germany", "netherlands", "sweden", "uk",
-        "switzerland", "canada", "usa", "argentina", "brazil",
-        "chile", "egypt", "kenya", "morocco", "nigeria",
-        "south_africa", "australia", "new_zealand",
-    ]
-    all_tracks = ["science", "social_studies", "languages", "religion", "vocational"]
-    all_fields = [
-        "computer_science", "engineering", "medicine", "business",
-        "economics", "law", "education", "arts_humanities",
-        "social_sciences", "agriculture", "mathematics", "physics",
-        "chemistry", "biology",
-    ]
-    all_list_values = all_countries + all_tracks + all_fields
-
-    list_vec = np.zeros((len(scholarships_df), LIST_VECTOR_DIM), dtype=np.float32)
+    # List vector from schema
+    all_list_values = schema["scholarship"]["all_list_values"]
+    list_vec = np.zeros((len(scholarships_df), schema["scholarship"]["list_vector_dim"]), dtype=np.float32)
 
     # eligible_nationalities → offset 0 (countries)
-    nationalities_vecs = _make_list_vectors(scholarships_df, "eligible_nationalities", all_list_values, 0, LIST_COUNTRY_DIM)
-    list_vec[:, :LIST_COUNTRY_DIM] = nationalities_vecs
+    nationalities_vecs = _make_list_vectors(
+        scholarships_df, "eligible_nationalities", all_list_values,
+        0, schema["scholarship"].get("list_country_dim", 27)
+    )
+    list_vec[:, :schema["scholarship"].get("list_country_dim", 27)] = nationalities_vecs
 
-    # eligible_high_school_tracks → offset 27 (tracks)
-    tracks_vecs = _make_list_vectors(scholarships_df, "eligible_high_school_tracks", all_list_values, LIST_COUNTRY_DIM, LIST_TRACK_DIM)
-    list_vec[:, LIST_COUNTRY_DIM:LIST_COUNTRY_DIM + LIST_TRACK_DIM] += tracks_vecs
+    # eligible_high_school_tracks → offset (countries) (tracks)
+    country_dim = schema["scholarship"].get("list_country_dim", 27)
+    track_dim = schema["scholarship"].get("list_track_dim", 5)
+    fields_vecs = _make_list_vectors(
+        scholarships_df, "eligible_high_school_tracks", all_list_values,
+        country_dim, track_dim
+    )
+    list_vec[:, country_dim:country_dim + track_dim] += fields_vecs
 
-    # eligible_fields → offset 32 (fields)
-    fields_vecs = _make_list_vectors(scholarships_df, "eligible_fields", all_list_values, LIST_COUNTRY_DIM + LIST_TRACK_DIM, LIST_FIELD_DIM)
-    list_vec[:, LIST_COUNTRY_DIM + LIST_TRACK_DIM:] += fields_vecs
+    # eligible_fields → offset (countries + tracks) (fields)
+    field_dim = schema["scholarship"].get("list_field_dim", 14)
+    fields_vecs = _make_list_vectors(
+        scholarships_df, "eligible_fields", all_list_values,
+        country_dim + track_dim, field_dim
+    )
+    list_vec[:, country_dim + track_dim:] += fields_vecs
 
     sch_parts.append(list_vec)
     sch_X = np.hstack(sch_parts).astype(np.float32)
 
-    student_mappings = {col: _encode_categorical(students_df, col)[1] for col in STUDENT_CATEGORICAL}
-    sch_mappings = {col: _encode_categorical(scholarships_df, col)[1] for col in SCHOLARSHIP_CATEGORICAL}
+    student_mappings = {col: _encode_categorical(students_df, col)[1] for col in schema["student"]["categorical"]}
+    sch_mappings = {col: _encode_categorical(scholarships_df, col)[1] for col in schema["scholarship"]["categorical"]}
 
     return student_X, sch_X, student_mappings, sch_mappings
 
@@ -307,18 +259,23 @@ def train(args):
     np.random.seed(SEED)
     tf.random.set_seed(SEED)
 
+    # --- Load schema ---
+    print(f"Loading schema from {args.schema_file}")
+    with open(args.schema_file) as f:
+        schema = json.load(f)
+
     # --- Load data ---
-    print(f"Loading data from {DATASET_DIR}/...")
-    students = pd.read_csv(f"{DATASET_DIR}/students.csv")
-    scholarships = pd.read_csv(f"{DATASET_DIR}/scholarships.csv")
-    pairs = pd.read_csv(f"{DATASET_DIR}/pairs.csv")
+    print(f"Loading data from {args.students_file}, {args.scholarships_file}, {args.pairs_file}")
+    students = pd.read_csv(args.students_file)
+    scholarships = pd.read_csv(args.scholarships_file)
+    pairs = pd.read_csv(args.pairs_file)
 
     print(f"  Students: {len(students)}, Scholarships: {len(scholarships)}, Pairs: {len(pairs)}")
 
     # --- Preprocess features ---
     print("Preprocessing features...")
     student_X, sch_X, student_mappings, sch_mappings = prepare_features(
-        students, scholarships
+        students, scholarships, schema
     )
 
     print(f"  Student features: {student_X.shape}")
@@ -376,6 +333,7 @@ def train(args):
     model.summary()
 
     # --- Callbacks ---
+    os.makedirs(args.output_dir, exist_ok=True)
     callbacks = [
         keras.callbacks.EarlyStopping(
             monitor="val_mae", patience=5, restore_best_weights=True, mode="min"
@@ -384,14 +342,13 @@ def train(args):
             monitor="val_mae", factor=0.5, patience=3, min_lr=1e-6
         ),
         keras.callbacks.TensorBoard(
-            log_dir=os.path.join(OUTPUT_DIR, "logs"), histogram_freq=1
+            log_dir=os.path.join(args.output_dir, "logs"), histogram_freq=1
         ),
     ]
 
     # --- Train ---
     print(f"\nTraining for {args.epochs} epochs...")
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
-    checkpoint_path = os.path.join(OUTPUT_DIR, "best_model.keras")
+    checkpoint_path = os.path.join(args.output_dir, "best_model.keras")
     callbacks.append(keras.callbacks.ModelCheckpoint(checkpoint_path, monitor="val_mae", save_best_only=True))
 
     history = model.fit(
@@ -444,72 +401,59 @@ def train(args):
     print(f"\nBinary Accuracy (threshold=0.5): {accuracy * 100:.2f}% ({n_correct}/{n_total})")
 
     # --- Save model ---
-    final_path = os.path.join(OUTPUT_DIR, "model.keras")
+    final_path = os.path.join(args.output_dir, "model.keras")
     model.save(final_path)
     print(f"\nModel saved to {final_path}")
     print(f"Checkpoint saved to {checkpoint_path}")
-    print(f"TensorBoard logs in {OUTPUT_DIR}/logs/")
+    print(f"TensorBoard logs in {args.output_dir}/logs/")
 
     # --- Save mappings for inference ---
     import pickle
     mappings = {"student": student_mappings, "scholarship": sch_mappings}
-    with open(os.path.join(OUTPUT_DIR, "mappings.pkl"), "wb") as f:
+    with open(os.path.join(args.output_dir, "mappings.pkl"), "wb") as f:
         pickle.dump(mappings, f)
-    print(f"Mappings saved to {OUTPUT_DIR}/mappings.pkl")
+    print(f"Mappings saved to {args.output_dir}/mappings.pkl")
 
-    # --- Save schema for inference ---
-    all_countries = [
-        "china", "india", "indonesia", "japan", "malaysia",
-        "philippines", "singapore", "south_korea", "thailand", "vietnam",
-        "france", "germany", "netherlands", "sweden", "uk",
-        "switzerland", "canada", "usa", "argentina", "brazil",
-        "chile", "egypt", "kenya", "morocco", "nigeria",
-        "south_africa", "australia", "new_zealand",
-    ]
-    all_tracks = ["science", "social_studies", "languages", "religion", "vocational"]
-    all_fields = [
-        "computer_science", "engineering", "medicine", "business",
-        "economics", "law", "education", "arts_humanities",
-        "social_sciences", "agriculture", "mathematics", "physics",
-        "chemistry", "biology",
-    ]
-
-    schema = {
-        "student": {
-            "categorical": STUDENT_CATEGORICAL,
-            "numerical": STUDENT_NUMERICAL,
-            "boolean": STUDENT_BOOLEAN,
-            "language_dim": 12,
-            "language_tests": ["toefl", "ielts", "topik", "jlpt", "delf", "hsk"],
-            "input_dim": int(student_X.shape[1]),
-        },
-        "scholarship": {
-            "categorical": SCHOLARSHIP_CATEGORICAL,
-            "numerical": SCHOLARSHIP_NUMERICAL,
-            "boolean": SCHOLARSHIP_BOOLEAN,
-            "list_vector_dim": int(LIST_VECTOR_DIM),
-            "list_country_dim": LIST_COUNTRY_DIM,
-            "list_track_dim": LIST_TRACK_DIM,
-            "list_field_dim": LIST_FIELD_DIM,
-            "all_countries": all_countries,
-            "all_tracks": all_tracks,
-            "all_fields": all_fields,
-            "all_list_values": all_countries + all_tracks + all_fields,
-            "input_dim": int(sch_X.shape[1]),
-        },
-    }
-
-    schema_path = os.path.join(OUTPUT_DIR, "schema.json")
+    # --- Save schema for inference (overwrite with actual used version) ---
+    schema["student"]["input_dim"] = int(student_X.shape[1])
+    schema["scholarship"]["input_dim"] = int(sch_X.shape[1])
+    schema_path = os.path.join(args.output_dir, "schema.json")
     with open(schema_path, "w") as f:
         json.dump(schema, f, indent=2)
     print(f"Schema saved to {schema_path}")
 
-    return model, history
+
+# ============================================================
+# Main
+# ============================================================
+
+def main():
+    parser = argparse.ArgumentParser(description="Train two-tower recommendation model")
+    parser.add_argument("--students-file", default=None, help="Path to students CSV")
+    parser.add_argument("--scholarships-file", default=None, help="Path to scholarships CSV")
+    parser.add_argument("--pairs-file", default=None, help="Path to pairs CSV")
+    parser.add_argument("--schema-file", default=None, help="Path to schema JSON")
+    parser.add_argument("--output-dir", default=None, help="Directory for outputs")
+    parser.add_argument("--epochs", type=int, default=30)
+    parser.add_argument("--batch-size", type=int, default=256)
+
+    args = parser.parse_args()
+
+    # Resolve defaults relative to script directory
+    base_dir = _SCRIPT_DIR
+    if not args.students_file:
+        args.students_file = str(base_dir / "datasets" / "students.csv")
+    if not args.scholarships_file:
+        args.scholarships_file = str(base_dir / "datasets" / "scholarships.csv")
+    if not args.pairs_file:
+        args.pairs_file = str(base_dir / "datasets" / "pairs.csv")
+    if not args.schema_file:
+        args.schema_file = str(base_dir / "models" / "schema.json")
+    if not args.output_dir:
+        args.output_dir = str(base_dir / "models")
+
+    train(args)
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Train two-tower recommendation model")
-    parser.add_argument("--epochs", type=int, default=EPOCHS)
-    parser.add_argument("--batch-size", type=int, default=BATCH_SIZE)
-    args = parser.parse_args()
-    train(args)
+    main()
