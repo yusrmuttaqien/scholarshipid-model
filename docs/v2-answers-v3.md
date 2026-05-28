@@ -1,6 +1,7 @@
 # Scholarship Recommendation System — Final Spec
-> For high school students seeking bachelor's scholarships abroad.
-> This spec is written to be given directly to a coding model. Read it top-to-bottom before writing any code — every section builds on the previous one.
+> For high school students seeking bachelor's scholarships abroad. <br>
+> This spec is written to be given directly to a coding model. Read it top-to-bottom before writing any code — every section builds on the previous one. <br>
+> Any python code run must be ran inside a env using `.venv/bin/activate`.
 
 ---
 

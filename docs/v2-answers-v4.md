@@ -1,6 +1,7 @@
 # Scholarship Recommendation System — Final Spec
-> For high school students seeking bachelor's scholarships abroad.
-> This spec is written to be given directly to a coding model. Read it top-to-bottom before writing any code — every section builds on the previous one.
+> For high school students seeking bachelor's scholarships abroad. <br>
+> This spec is written to be given directly to a coding model. Read it top-to-bottom before writing any code — every section builds on the previous one. <br>
+> Any python code run must be ran inside a env using `.venv/bin/activate`.
 
 ---
 
@@ -11,7 +12,7 @@
 ### Why Two Tower
 | Concern | Two Tower behavior |
 |---|---|
-| New scholarship cold-start | Encode new scholarship through its tower → append to embedding index. No retraining. |
+| New scholarship cold-start | Included in next retrain payload → pseudo-label pairs generated from eligibility → gets an embedding and is surfaced immediately. Sharpens as interactions accumulate. |
 | New student cold-start | Student tower produces embedding from features alone. Works immediately. |
 | Inference speed | Pre-compute all scholarship embeddings once. Query = 1 student forward pass + dot product. |
 | Interaction data fit | (student, scholarship, weight) pairs map directly to contrastive training. |
@@ -106,6 +107,7 @@ scholarship-recommender/
 │   ├── routes/
 │   │   ├── recommend.py        # POST /v1/recommend, POST /v1/recommend/explain
 │   │   ├── interactions.py     # POST /v1/interactions
+│   │   ├── scholarships.py     # GET /v1/scholarships
 │   │   └── retrain.py          # POST /v1/retrain — receives CSVs, triggers retraining
 │   └── schemas_api.py          # Pydantic request/response models (separate from domain schemas)
 │
@@ -151,6 +153,8 @@ LEARNING_RATE       = 1e-3
 MAX_EPOCHS          = 50
 EARLY_STOP_PATIENCE = 5
 TOP_K               = 10        # for NDCG@K evaluation
+NDCG_THRESHOLD      = 0.80      # minimum NDCG@10 required to promote a new model version
+MAX_SCHOLARSHIP_AGE = 30        # normalization denominator for scholarship min/max age
 
 # ─── Text encoder ─────────────────────────────────────────────────────────────
 USE_MODEL_URL = "https://tfhub.dev/google/universal-sentence-encoder/4"
@@ -252,8 +256,8 @@ student_text = concat([
 ```python
 # Group A: Numeric
 scholarship_numeric = [
-    min_age / 18.0,
-    max_age / 18.0,
+    min_age / 30.0,             # scholarships can require min age up to ~25–30
+    max_age / 30.0,             # scholarships can allow max age up to ~30
     min_report_card_average / 100.0,
     min_major_subject_average / 100.0,
     float(requires_financial_need),
@@ -303,28 +307,37 @@ import numpy as np
 rng = np.random.default_rng(SEED)
 ```
 
-**Source 1 — Pseudo-labels** (used before real interactions exist, or to fill gaps):
+**Per-scholarship fallback logic — this is the core rule:**
+
+For every scholarship in `scholarships.csv`, the pair builder checks whether it has
+any rows in `interactions.csv`. The signal source is chosen per scholarship, not globally:
+
 ```
-For each student:
-  Run hard_filter against all scholarships
-  → eligible = scholarships student qualifies for
-  → create positive pairs: (student, eligible_scholarship, label=0.6, weight=0.5)
-      label is 0.6 not 1.0 — these are synthetic, not confirmed by real behavior
-  → sample 3–5 ineligible scholarships as negatives using rng
-  → create negative pairs: (student, ineligible_scholarship, label=0.0, weight=0.5)
+scholarships.csv → for each scholarship:
+
+  Has at least one row in interactions.csv?
+  │
+  ├── YES → build interaction-based pairs for it
+  │           Group its interaction rows by (student_id, scholarship_id)
+  │           For each group:
+  │             aggregated = sum(EVENT_WEIGHTS[event] for each event)
+  │             clipped    = clip(aggregated, -1.0, 1.0)
+  │             label      = (clipped + 1) / 2     # [-1, 1] → [0, 1]
+  │             weight     = 1.0                    # real signal, full weight
+  │
+  └── NO  → fall back to pseudo-label pairs for it
+              Run hard_filter(student, [this_scholarship]) for each student
+              If eligible:
+                create positive pair (label=0.6, weight=0.5)
+                  label is 0.6 not 1.0 — synthetic, not confirmed by behavior
+              Sample 3–5 students who are ineligible using rng:
+                create negative pairs (label=0.0, weight=0.5)
 ```
 
-**Source 2 — Interaction-based labels** (from interactions.csv):
-```
-Group interactions by (student_id, scholarship_id)
-For each group:
-  aggregated = sum(EVENT_WEIGHTS[event] for each event in group)
-  clipped    = clip(aggregated, -1.0, 1.0)
-  label      = (clipped + 1) / 2          # map [-1, 1] → [0, 1]
-  weight     = 1.0                         # real interactions get full weight
-
-Interaction-based pairs override pseudo-label pairs for the same (student, scholarship).
-```
+This means a new scholarship with zero interaction history is never silently skipped —
+it always gets pseudo-label pairs generated from eligibility logic, enters training,
+and receives an embedding. Once interactions accumulate, the next retrain replaces
+its pseudo-label pairs with real interaction-based ones automatically.
 
 **Final pair structure:**
 ```python
@@ -335,6 +348,59 @@ Interaction-based pairs override pseudo-label pairs for the same (student, schol
     "weight": float,   # 0.5 for pseudo, 1.0 for interaction-based
 }
 ```
+
+### 5.4 New Scholarship Lifecycle
+
+When the web backend adds a new scholarship to their database, no special action is
+needed from the ML team. The scholarship flows through the pipeline naturally:
+
+```
+Web backend adds new scholarship to their DB
+        │
+        ▼
+Next retrain payload includes it in scholarships.csv
+(zero rows for it in interactions.csv)
+        │
+        ▼
+pair_builder.py: no interactions found → pseudo-label pairs generated
+        │
+        ▼
+train.py: model trains on pseudo-label pairs for this scholarship
+        │
+        ▼
+embeddings.py: all scholarships in scholarships.csv get encoded,
+including the new one → enters the embedding index
+        │
+        ▼
+Service now surfaces the new scholarship to eligible students
+        │
+        ▼
+Students interact with it (view, click, apply, reject)
+        │
+        ▼
+Next retrain payload includes its interaction rows
+→ pseudo-label pairs replaced by interaction-based pairs
+→ embedding sharpens to reflect real fit signal
+```
+
+**Important caveat**: pseudo-labels are based on eligibility only — if a student passes
+the hard filter, they get a positive pair. Eligibility ≠ good fit. A student might be
+technically eligible but a poor match on softer criteria (essay weight, leadership focus,
+career alignment). This means a new scholarship's embedding starts somewhat noisy —
+discoverable but not yet well-ranked relative to similar scholarships. This is expected
+and corrects itself as real interactions accumulate.
+
+### 5.5 Retrain Trigger Agreement (with web backend team)
+
+The web backend team controls when `POST /v1/retrain` is called. Agree on these two rules:
+
+1. **On a regular cadence** — e.g. weekly, to incorporate accumulated interaction data.
+2. **When new scholarships are added** — trigger a retrain payload promptly after a batch
+   of new scholarships is added to the database. Without this, new scholarships sit in
+   the DB but never receive an embedding and are never surfaced to students.
+
+The ML service does not poll the web backend database. It only processes data when
+a retrain payload is explicitly sent. This agreement must be documented between teams.
 
 ---
 
@@ -493,11 +559,9 @@ Step 7:  model.fit(
            ],
          )
 Step 8:  Save model to MODEL_DIR / "model_v{N}/"
-Step 9:  embeddings.py → generate scholarship_embeddings.npy + scholarship_id_map.json
-         Save to EMBEDDINGS_DIR / "v{N}/"
-Step 10: evaluate.py → check NDCG@10 ≥ threshold
-Step 11: If passes → promote_version("v{N}") → update active.json
-         If fails  → leave active.json untouched (service keeps previous version)
+         train.py stops here — embedding generation, evaluation, and promotion
+         are orchestrated by feedback/retrain_trigger.py (or called directly
+         for the initial bootstrap run).
 ```
 
 ---
@@ -508,6 +572,17 @@ Step 11: If passes → promote_version("v{N}") → update active.json
 
 This file defines which model and embeddings version the live service uses.
 It is **only updated after a new version passes evaluation.**
+
+**Bootstrap (first deployment)**: Before the service can start, an initial training
+run must be completed to produce `model_v1/` and `embeddings/v1/`. At the end of
+that run, `active.json` must be written with `"model_version": "v1"` and
+`"embeddings_version": "v1"`. The service must not be started until this file exists.
+Add a startup guard in `service/main.py`:
+
+```python
+if not ACTIVE_FILE.exists():
+    raise RuntimeError("active.json not found — run initial training before starting the service.")
+```
 
 ```json
 {
@@ -600,13 +675,21 @@ def build_scholarship_embeddings(model, scholarships, preprocessor):
     Saves:
       EMBEDDINGS_DIR / "v{N}" / "scholarship_embeddings.npy"  → shape (N, EMBEDDING_DIM)
       EMBEDDINGS_DIR / "v{N}" / "scholarship_id_map.json"     → {index: scholarship_id}
+    Called by: retrain_trigger.py after every training run.
     """
 
 def append_scholarship_embeddings(model, new_scholarships, preprocessor, version):
     """
-    For new scholarships only — no retraining needed.
-    Encodes only the new scholarships and appends to the existing .npy file.
-    Updates scholarship_id_map.json.
+    For new scholarships only — encodes only the new scholarships and appends to
+    the existing .npy file. Updates scholarship_id_map.json.
+
+    NOTE: This is a lightweight alternative to a full retrain. It is NOT called
+    during the normal retrain flow (retrain_trigger.py always calls build_scholarship_embeddings).
+    Use this only if the web backend team needs to surface new scholarships immediately
+    without waiting for the next scheduled retrain. If used, the web backend must call
+    a dedicated endpoint (e.g. POST /v1/scholarships/embed) that is outside the main
+    retrain flow. Do not implement this endpoint unless the web backend team requests it —
+    the default lifecycle (Section 5.4) routes everything through a full retrain.
     """
 ```
 
@@ -771,9 +854,10 @@ async def trigger_retrain(
     save_upload(interactions_csv, EXPORTS_DIR / "interactions.csv")
 
     # Run retrain pipeline in background so API returns immediately
+    new_version = retrain_trigger.get_next_version()
     background_tasks.add_task(retrain_trigger.run, EXPORTS_DIR)
 
-    return { "status": "started" }
+    return { "status": "started", "version": new_version }
 ```
 
 ### API schemas (`service/schemas_api.py`)
@@ -815,6 +899,16 @@ def run(exports_dir: Path):
         # active.json unchanged, old model stays live
 ```
 
+**When retraining is triggered** — the ML service does not poll the web backend.
+`POST /v1/retrain` is called explicitly by the web backend team. Two agreed triggers:
+
+1. **Regular cadence** — e.g. weekly, to incorporate accumulated interaction data.
+2. **When new scholarships are added** — trigger promptly after a batch of new scholarships
+   is added to the web backend DB. Without this, new scholarships never receive an embedding
+   and are never surfaced to students regardless of how long they sit in the database.
+
+See Section 5.4 for the full new scholarship lifecycle and Section 5.5 for the trigger agreement details.
+
 ---
 
 ## 14. File Inventory
@@ -845,6 +939,7 @@ def run(exports_dir: Path):
 | `service/schemas_api.py` | Pydantic request/response models | All route files |
 | `service/routes/recommend.py` | POST /v1/recommend, POST /v1/recommend/explain | main.py |
 | `service/routes/interactions.py` | POST /v1/interactions | main.py |
+| `service/routes/scholarships.py` | GET /v1/scholarships — returns in-memory scholarship list | main.py |
 | `service/routes/retrain.py` | POST /v1/retrain — saves CSVs, triggers background retrain | main.py |
 | `service/main.py` | FastAPI app init, router registration, Predictor init on startup | Entry point |
 | `feedback/retrain_trigger.py` | Orchestrates: pair_builder → train → embeddings → evaluate → promote | retrain route |
