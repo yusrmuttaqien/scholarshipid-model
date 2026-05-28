@@ -1,0 +1,45 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+*.dist-info/
+.venv/
+venv/
+.env
+
+# Project install
+*.egg-info/
+dist/
+build/
+
+# Data — jangan commit ke repo
+data/raw/*
+data/processed/*
+data/features/*
+!data/**/.gitkeep
+
+# Outputs — checkpoints & embeddings besar, jangan commit
+outputs/checkpoints/*
+outputs/logs/*
+outputs/embeddings/*
+!outputs/**/.gitkeep
+
+# Notebook checkpoints
+.ipynb_checkpoints/
+notebooks/.ipynb_checkpoints/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Wandb
+wandb/
+
+# Other
+CLAUDE.md
+CONTEXT.md
+docs/
