@@ -44,7 +44,6 @@ Student Tower                     Scholarship Tower
 │   ├── train.py                       # Step 2: training
 │   ├── evaluate.py                    # Step 3: evaluasi test set
 │   ├── export_embeddings.py           # Step 4: export untuk serving
-│   └── serve.py                       # Step 5: jalankan API
 └── src/
     ├── models/
     │   ├── student_tower.py
@@ -53,12 +52,8 @@ Student Tower                     Scholarship Tower
     ├── trainers/trainer.py
     ├── evaluators/evaluator.py
     ├── utils/
-    │   ├── feature_engineering.py
-    │   └── data_loader.py
-    └── serving/
-        ├── api.py
-        ├── inference_engine.py
-        └── schemas.py
+        ├── feature_engineering.py
+        └── data_loader.py
 ```
 
 ## Setup
