@@ -87,7 +87,11 @@ def encode_student(row: dict) -> list:
 
     # language_proficiency: has_test + norm_score per test type              # 12
     lang_prof = row["language_proficiency"] or []
-    lang_map = {lp["test_type"]: lp["score"] for lp in lang_prof}
+    lang_map = {
+        lp.get("test_type"): lp.get("score", 0)
+        for lp in lang_prof
+        if isinstance(lp, dict) and lp.get("test_type")
+    }
     for t in ALL_LANG_TESTS:
         if t in lang_map:
             feats += [1.0, norm_clip(lang_map[t], 0, LANG_SCORE_MAX[t])]
@@ -130,7 +134,11 @@ def encode_scholarship(row: dict) -> list:
 
     # language requirements: min_score per test type                         # 6
     lang_reqs = row["language_requirements"] or []
-    req_map = {lr["test_type"]: lr["min_score"] for lr in lang_reqs}
+    req_map = {
+        lr.get("test_type"): lr.get("min_score", 0)
+        for lr in lang_reqs
+        if isinstance(lr, dict) and lr.get("test_type")
+    }
     for t in ALL_LANG_TESTS:
         feats += [norm_clip(req_map.get(t, 0), 0, LANG_SCORE_MAX[t])]
 

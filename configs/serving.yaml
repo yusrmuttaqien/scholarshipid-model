@@ -1,34 +1,12 @@
-environment: local  # "local" for development, "production" for hosted deployment (Railway/HF Spaces)
-
-# Data source configuration
-data_source: csv  # "csv" for local file-based, "database" when integrated with web team's DB
-
-csv_path: data/raw/scholarships.csv
-
 # Model checkpoint paths
 models:
   student_tower: outputs/checkpoints/student_tower_best.keras
   scholarship_tower: outputs/checkpoints/scholarship_tower_best.keras
-
-# Refresh behavior controls how scholarship cache is built and updated
-refresh:
-  # When true, always recompute embeddings on-the-fly from data source (CSV or DB)
-  # Local: true — useful for development with small datasets
-  # Production: false — use precomputed embeddings at startup for fast cold start
-  on_the_fly: true
 
 # Server configuration
 server:
   host: 0.0.0.0
   port: 8000
   cors_origins: "*"  # Local: allow all. Production: restrict to specific domains (e.g., "https://scholarship.id")
-  auth_required: false  # Local: false. Production: true for /refresh endpoint
-
-# Precomputed embeddings paths (used when on_the_fly is false at startup)
-precomputed:
-  scholarship_struct: outputs/embeddings/scholarships_struct.npy
-  scholarship_text: outputs/embeddings/scholarships_text.npy
-
-# Logging
-logging:
-  level: DEBUG  # Local: DEBUG. Production: INFO or WARNING
+  auth_required: false  # Local: false. Production: true to enable Bearer token auth on /refresh
+  auth_token: ""  # Set this to a secret token for production auth

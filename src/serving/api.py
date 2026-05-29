@@ -7,12 +7,23 @@ Endpoints:
 """
 from __future__ import annotations
 
+from http import HTTPStatus
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field
 
 from src.serving.inference_engine import InferenceEngine
+
+# Bearer security scheme for auth-protected endpoints
+security = HTTPBearer(auto_error=False)
+
+
+def _get_auth_token(credentials: Optional[HTTPAuthorizationCredentials] = Depends(security)) -> Optional[str]:
+    """Dependency to extract Bearer token from request headers."""
+    return credentials.credentials if credentials else None
 
 
 # ── Pydantic schemas ──────────────────────────────────────────────────────
@@ -204,6 +215,17 @@ def create_app(engine: InferenceEngine) -> FastAPI:
         version="0.1.0",
     )
 
+    # ── CORS Middleware ──────────────────────────────────────────────────
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=[engine.serving_config.cors_origins]
+            if engine.serving_config.cors_origins != "*"
+            else ["*"],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
     # ── Endpoints ────────────────────────────────────────────────────────
 
     @app.post("/recommend", response_model=RecommendationResponse)
@@ -227,14 +249,35 @@ def create_app(engine: InferenceEngine) -> FastAPI:
         )
 
     @app.post("/refresh", response_model=RefreshResponse)
-    async def refresh():
-        """Rebuild the scholarship embedding cache.
+    async def refresh(
+        auth_token: Optional[str] = Depends(_get_auth_token),
+        csv_file: UploadFile = File(...),
+    ):
+        """Rebuild the scholarship embedding cache from an uploaded CSV file.
 
         Call this endpoint after new scholarships are added to the data source.
-        Requires admin authentication in production.
+        Requires admin authentication when auth_required is enabled.
+
+        A CSV file must be attached in the request body (multipart/form-data).
         """
+        # Validate file extension
+        if not csv_file.filename or not csv_file.filename.lower().endswith(".csv"):
+            raise HTTPException(
+                status_code=422,
+                detail="Only .csv files are allowed",
+            )
+
+        # Auth check
+        if engine.serving_config.auth_required:
+            if auth_token is None or auth_token != engine.serving_config.auth_token:
+                raise HTTPException(
+                    status_code=HTTPStatus.UNAUTHORIZED,
+                    detail="Invalid or missing authorization token",
+                )
+
         try:
-            engine.refresh_scholarships()
+            content = await csv_file.read()
+            engine.refresh_from_csv(content.decode("utf-8"))
         except Exception as exc:
             raise HTTPException(status_code=500, detail=str(exc))
 

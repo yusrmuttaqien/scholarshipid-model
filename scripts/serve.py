@@ -15,10 +15,12 @@ os.environ["OMP_NUM_THREADS"] = "1"
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 import argparse
+import signal
+import sys
 
 import uvicorn
 
-from src.serving.inference_engine import InferenceEngine, ServingConfig
+from src.serving.inference_engine import InferenceEngine
 from src.serving.api import create_app
 
 
@@ -44,18 +46,12 @@ def parse_args():
 def main():
     args = parse_args()
 
-    # Load serving configuration (environment-specific settings)
-    serving_cfg = ServingConfig(args.serving_config)
-
-    # Allow CLI flags to override config file values
-    student_tower_path = args.student_tower or serving_cfg.student_tower_path
-    scholarship_tower_path = args.scholarship_tower or serving_cfg.scholarship_tower_path
-
     # Build and initialize inference engine (loads models, warms up SBERT, caches scholarships)
-    print(f"Initializing InferenceEngine (environment: {serving_cfg.environment}) ...")
+    # Pass None for paths not provided via CLI — InferenceEngine will resolve defaults from config
+    print(f"Initializing InferenceEngine (config: {args.serving_config}) ...")
     engine = InferenceEngine(
-        student_tower_path=student_tower_path,
-        scholarship_tower_path=scholarship_tower_path,
+        student_tower_path=args.student_tower,
+        scholarship_tower_path=args.scholarship_tower,
         config_path=args.config,
         serving_config_path=args.serving_config,
     )
@@ -65,12 +61,23 @@ def main():
     app = create_app(engine)
 
     # Start uvicorn server with config-driven host/port
-    print(f"Starting server on {serving_cfg.server_host}:{serving_cfg.server_port}")
-    uvicorn.run(
-        app,
-        host=serving_cfg.server_host,
-        port=serving_cfg.server_port,
-    )
+    print(f"Starting server on {engine.serving_config.server_host}:{engine.serving_config.server_port}")
+
+    def shutdown(signum, frame):
+        print("\nShutting down gracefully...")
+        sys.exit(0)
+
+    signal.signal(signal.SIGINT, shutdown)
+    signal.signal(signal.SIGTERM, shutdown)
+
+    try:
+        uvicorn.run(
+            app,
+            host=engine.serving_config.server_host,
+            port=engine.serving_config.server_port,
+        )
+    except KeyboardInterrupt:
+        pass
 
 
 if __name__ == "__main__":

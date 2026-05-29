@@ -62,24 +62,14 @@ class ServingConfig:
         with open(config_path) as f:
             cfg = yaml.safe_load(f)
 
-        self.environment: str = cfg.get("environment", "local")
-        self.data_source: str = cfg.get("data_source", "csv")
-        self.csv_path: str = cfg.get("csv_path", "data/raw/scholarships.csv")
-
         self.student_tower_path: str = cfg["models"]["student_tower"]
         self.scholarship_tower_path: str = cfg["models"]["scholarship_tower"]
-
-        self.refresh_on_the_fly: bool = cfg["refresh"].get("on_the_fly", True)
 
         self.server_host: str = cfg["server"]["host"]
         self.server_port: int = cfg["server"]["port"]
         self.cors_origins: str = cfg["server"]["cors_origins"]
         self.auth_required: bool = cfg["server"].get("auth_required", False)
-
-        self.precomputed_struct_path: str = cfg["precomputed"]["scholarship_struct"]
-        self.precomputed_text_path: str = cfg["precomputed"]["scholarship_text"]
-
-        self.log_level: str = cfg["logging"].get("level", "DEBUG")
+        self.auth_token: str = cfg["server"].get("auth_token", "")
 
 
 class InferenceEngine:
@@ -107,15 +97,17 @@ class InferenceEngine:
 
     def __init__(
         self,
-        student_tower_path: str,
-        scholarship_tower_path: str,
+        student_tower_path: Optional[str],
+        scholarship_tower_path: Optional[str],
         config_path: str = "configs/default.yaml",
         serving_config_path: str = "configs/serving.yaml",
     ):
-        self.student_tower_path = student_tower_path
-        self.scholarship_tower_path = scholarship_tower_path
-        self.config_path = config_path
         self.serving_config = ServingConfig(serving_config_path)
+        self.config_path = config_path
+
+        # Resolve default paths from ServingConfig when not provided via CLI
+        self.student_tower_path = student_tower_path or self.serving_config.student_tower_path
+        self.scholarship_tower_path = scholarship_tower_path or self.serving_config.scholarship_tower_path
 
         # Loaded from config
         self.cfg: Optional[dict] = None
@@ -207,17 +199,18 @@ class InferenceEngine:
         return results
 
     def refresh_scholarships(self):
-        """Rebuild scholarship embedding cache from CSV on-the-fly.
+        """Rebuild scholarship embedding cache from local CSV file.
 
-        Reads the CSV directly, parses JSON columns, encodes structured + text
-        features through SBERT and the scholarship tower, then caches embeddings.
+        Reads the CSV file from the configured data path, parses JSON columns,
+        encodes structured + text features through SBERT and the scholarship tower,
+        then caches embeddings.
 
-        This method always recomputes — it does NOT depend on precomputed .npy files.
+        This method is used for local development where data is read from files.
         """
         if self.cfg is None:
             self.cfg = self._load_config()
 
-        # Load scholarships directly from CSV
+        # Load scholarships directly from CSV file
         raw_path = self.cfg["data"]["raw_path"]
         scholarships_df = pd.read_csv(f"{raw_path}/scholarships.csv")
 
@@ -272,6 +265,70 @@ class InferenceEngine:
         print(f"Scholarship cache refreshed: {len(self._sch_ids)} scholarships "
               f"(embedding shape {self._sch_emb.shape})")
 
+    def refresh_from_csv(self, csv_text: str):
+        """Rebuild scholarship embedding cache from CSV text.
+
+        Parses the CSV text (from an API payload), encodes structured + text
+        features through SBERT and the scholarship tower, then caches embeddings.
+
+        This method is used for production where data is pushed via the /refresh endpoint.
+
+        Args:
+            csv_text: Raw CSV text content to parse.
+        """
+        # Parse CSV from string
+        scholarships_df = pd.read_csv(pd.io.common.StringIO(csv_text))
+
+        # Parse JSON columns (language_requirements, selection_criteria)
+        for col in ["language_requirements", "selection_criteria"]:
+            if col in scholarships_df.columns:
+                def parse_json(val):
+                    if isinstance(val, str) and val.strip().startswith(("[", "{")):
+                        try:
+                            return json.loads(val)
+                        except (json.JSONDecodeError, ValueError):
+                            return val
+                    return val
+                scholarships_df[col] = scholarships_df[col].apply(parse_json)
+
+        # Encode each scholarship on-the-fly
+        sch_struct_list = []
+        sch_text_list = []
+
+        for _, row in scholarships_df.iterrows():
+            # Build dict from row
+            sch_dict = row.to_dict()
+            sch_struct = encode_scholarship(sch_dict)
+            sch_struct_list.append(sch_struct)
+
+            # Text embedding from mission_statement + target_recipient_profile
+            text_parts = []
+            for field in ["mission_statement", "target_recipient_profile"]:
+                val = sch_dict.get(field, "")
+                if val:
+                    text_parts.append(str(val))
+            sch_text_raw = " ".join(text_parts) if text_parts else ""
+            sch_text_list.append(sch_text_raw)
+
+        # Stack structured features
+        sch_struct = np.array(sch_struct_list, dtype=np.float32)
+
+        # Encode text features via SBERT
+        sch_text_emb = encode_text(sch_text_list)
+
+        # Concatenate structured + text features, run through scholarship tower
+        sch_feat = np.concatenate([sch_struct, sch_text_emb], axis=1)
+        self._sch_emb = self.scholarship_tower(
+            sch_feat, training=False
+        ).numpy()  # (N, 128) L2-normalized
+
+        # Build metadata for API responses
+        self._sch_ids = scholarships_df["scholarship_id"].tolist()
+        self._sch_metadata = _build_scholarship_metadata(scholarships_df)
+
+        print(f"Scholarship cache refreshed from CSV: {len(self._sch_ids)} scholarships "
+              f"(embedding shape {self._sch_emb.shape})")
+
     def add_scholarships(self, new_scholarships: list[dict]) -> int:
         """Encode and cache new scholarships without a full refresh.
 
@@ -294,12 +351,15 @@ class InferenceEngine:
             [encode_scholarship(s) for s in new_scholarships], dtype=np.float32
         )
 
-        # Encode text features via SBERT
-        texts = [
-            (s.get("mission_statement", "") or "") + " " +
-            (s.get("target_recipient_profile", "") or "")
-            for s in new_scholarships
-        ]
+        # Encode text features via SBERT — same logic as refresh_scholarships
+        texts = []
+        for s in new_scholarships:
+            text_parts = []
+            for field in ["mission_statement", "target_recipient_profile"]:
+                val = s.get(field)
+                if val:
+                    text_parts.append(str(val))
+            texts.append(" ".join(text_parts))
         new_text_emb = encode_text(texts)
 
         # Run through scholarship tower to get embeddings

@@ -74,7 +74,7 @@ python -m venv venv
 # Mac/Linux
 source venv/bin/activate
 
-pip install -r requirements.txt
+pip install -r requirements.txt # or use yusr-requirements.txt if encounter segfaults error on serve
 pip install -e .
 ```
 
@@ -88,13 +88,13 @@ python scripts/precompute_text_embeddings.py # or python -m scripts.precompute_t
 python scripts/train.py --config configs/default.yaml # or python -m scripts.train --config configs/default.yaml
 
 # Step 3 — Evaluasi pada test set
-python scripts/evaluate.py \  # or python -m scripts.evaluate
+python scripts/evaluate.py \  # or python -m scripts.evaluate \
   --config configs/default.yaml \
   --student_checkpoint outputs/checkpoints/student_tower_best.keras \
   --scholarship_checkpoint outputs/checkpoints/scholarship_tower_best.keras
 
 # Step 4 — Export scholarship embeddings untuk serving
-python scripts/export_embeddings.py \  # or python -m scripts.export_embeddings
+python scripts/export_embeddings.py \  # or python -m scripts.export_embeddings \
   --scholarship_checkpoint outputs/checkpoints/scholarship_tower_best.keras
 ```
 
