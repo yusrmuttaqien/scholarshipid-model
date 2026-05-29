@@ -26,6 +26,17 @@ STU_EMB_PATH = os.path.join(EMB_DIR, "students.npy")
 SCH_EMB_PATH = os.path.join(EMB_DIR, "scholarships.npy")
 SCH_IDS_PATH = os.path.join(OUTPUT_DIR, "scholarship_ids.npy")
 
+# Source files to check for staleness
+STU_SRC  = os.path.join(DATA_DIR, "students.csv")
+SCH_SRC  = os.path.join(DATA_DIR, "scholarships.csv")
+
+
+def _needs_recompute(src_path: str, dst_path: str) -> bool:
+    """Return True if the source is newer than the destination, or dst doesn't exist."""
+    if not os.path.exists(dst_path):
+        return True
+    return os.path.getmtime(src_path) > os.path.getmtime(dst_path)
+
 
 def main():
     students_df     = pd.read_csv(os.path.join(DATA_DIR, "students.csv"))
@@ -35,10 +46,7 @@ def main():
     print(f"Scholarships: {len(scholarships_df)}")
 
     # ── Student text embeddings ───────────────────────────────────────────────
-    if os.path.exists(STU_EMB_PATH):
-        print(f"\n[SKIP] {STU_EMB_PATH} sudah ada.")
-        student_text_emb = np.load(STU_EMB_PATH)
-    else:
+    if _needs_recompute(STU_SRC, STU_EMB_PATH):
         print("\nEncoding student texts (ini butuh beberapa menit)...")
         stu_texts = (
             students_df["personal_statement"].fillna("") + " " +
@@ -48,12 +56,12 @@ def main():
         student_text_emb = encode_text(stu_texts)
         np.save(STU_EMB_PATH, student_text_emb)
         print(f"Saved: {STU_EMB_PATH}  shape={student_text_emb.shape}")
+    else:
+        print(f"\n[SKIP] {STU_EMB_PATH} (source unchanged)")
+        student_text_emb = np.load(STU_EMB_PATH)
 
     # ── Scholarship text embeddings ───────────────────────────────────────────
-    if os.path.exists(SCH_EMB_PATH):
-        print(f"[SKIP] {SCH_EMB_PATH} sudah ada.")
-        scholarship_text_emb = np.load(SCH_EMB_PATH)
-    else:
+    if _needs_recompute(SCH_SRC, SCH_EMB_PATH):
         print("Encoding scholarship texts...")
         sch_texts = (
             scholarships_df["mission_statement"].fillna("") + " " +
@@ -62,6 +70,9 @@ def main():
         scholarship_text_emb = encode_text(sch_texts)
         np.save(SCH_EMB_PATH, scholarship_text_emb)
         print(f"Saved: {SCH_EMB_PATH}  shape={scholarship_text_emb.shape}")
+    else:
+        print(f"[SKIP] {SCH_EMB_PATH} (source unchanged)")
+        scholarship_text_emb = np.load(SCH_EMB_PATH)
 
     # ── Scholarship IDs ───────────────────────────────────────────────────────
     scholarship_ids = scholarships_df["scholarship_id"].tolist()

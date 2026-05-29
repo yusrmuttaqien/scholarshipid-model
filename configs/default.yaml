@@ -47,3 +47,8 @@ output:
   checkpoint_dir: outputs/checkpoints/
   log_dir: outputs/logs/
   embedding_dir: outputs/embeddings/
+
+tensorboard:
+  enabled: true
+  histogram_freq: 1  # log embeddings every N epochs (0 = disabled)
+  suffix: ""         # optional suffix for log directory name

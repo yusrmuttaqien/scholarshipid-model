@@ -37,9 +37,9 @@ Student Tower                     Scholarship Tower
 ├── notebooks/
 │   └── notebook_two_tower.ipynb # Referensi implementasi (TF/Keras)
 ├── outputs/
-│   ├── checkpoints/             # student_tower_best.weights.h5, scholarship_tower_best.weights.h5
+│   ├── checkpoints/             # student_tower_best.keras, scholarship_tower_best.keras
 │   ├── embeddings/              # scholarship_emb.npy, scholarship_ids.npy
-│   └── logs/
+│   └── logs/                    # TensorBoard logs (tb_{experiment_name}/)
 ├── scripts/
 │   ├── precompute_text_embeddings.py  # Step 1: cache SBERT
 │   ├── train.py                       # Step 2: training
@@ -76,6 +76,10 @@ source venv/bin/activate
 
 pip install -r requirements.txt # or use yusr-requirements.txt if encounter segfaults error on serve
 pip install -e .
+
+# Optional, if Tensorboard failing to launch
+
+pip install 'setuptools<75'
 ```
 
 ## Quick Start
@@ -105,6 +109,14 @@ python scripts/export_embeddings.py \  # or python -m scripts.export_embeddings 
 | `students.csv` | 20.000 | Profil siswa SMA |
 | `scholarships.csv` | 43 | Beasiswa S1 luar negeri |
 | `feedback.csv` | 100.000 | Interaksi: click / apply / accepted |
+
+## Monitoring (TensorBoard)
+
+TensorBoard logs are written to `outputs/logs/tb_{experiment_name}/`.
+
+```bash
+tensorboard --logdir outputs/logs/ --bind_all
+```
 
 ## Serving (FastAPI)
 

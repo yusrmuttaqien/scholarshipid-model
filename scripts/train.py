@@ -17,6 +17,40 @@ from src.evaluators import Evaluator
 from src.utils.data_loader import load_data, load_precomputed_features, make_dataset
 
 
+def _build_log_dir(cfg: dict) -> str:
+    """Build TensorBoard log directory path.
+
+    Returns a clean path without trailing underscores.
+    """
+    tb_cfg = cfg.get("tensorboard", {})
+    suffix = tb_cfg.get("suffix", "")
+    if suffix:
+        return os.path.join(
+            cfg["output"]["log_dir"],
+            f"tb_{cfg['experiment']['name']}_{suffix}",
+        )
+    return os.path.join(cfg["output"]["log_dir"], f"tb_{cfg['experiment']['name']}")
+
+
+def _log_scalar(summary_writer, name, value, step):
+    """Write a scalar to TensorBoard summary."""
+    with summary_writer.as_default():
+        tf.summary.scalar(name, value, step=step)
+
+
+def _log_embedding_histograms(student_tower, scholarship_tower, summary_writer, step):
+    """Log embedding vector distributions from both towers."""
+    dummy = tf.constant([[0.0] * 1], dtype=tf.float32)
+    try:
+        stu_emb = student_tower(dummy, training=False)
+        sch_emb = scholarship_tower(dummy, training=False)
+        with summary_writer.as_default():
+            tf.summary.histogram("embeddings/student_tower", stu_emb, step=step)
+            tf.summary.histogram("embeddings/scholarship_tower", sch_emb, step=step)
+    except Exception:
+        pass  # non-fatal; training continues regardless
+
+
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=str, default="configs/default.yaml")
@@ -75,6 +109,14 @@ def main():
     epochs = cfg["training"]["epochs"]
     print(f"\nTraining {epochs} epochs...\n")
 
+    # ── TensorBoard setup ───────────────────────────────────────────────────────
+    tb_cfg = cfg.get("tensorboard", {})
+    tb_enabled = tb_cfg.get("enabled", False)
+    summary_writer = None
+    if tb_enabled:
+        log_dir = _build_log_dir(cfg)
+        summary_writer = tf.summary.create_file_writer(log_dir)
+
     callback.on_train_begin()
     for epoch in range(1, epochs + 1):
         train_loss = trainer.train_epoch(train_ds)
@@ -101,6 +143,20 @@ def main():
         }
         callback.on_epoch_end(epoch - 1, logs=logs)
 
+        # ── TensorBoard logging ───────────────────────────────────────────────
+        if tb_enabled and summary_writer is not None:
+            epoch_step = epoch  # use epoch number as the step
+            _log_scalar(summary_writer, "loss/train_loss", train_loss, epoch_step)
+            _log_scalar(summary_writer, "loss/val_loss", val_loss, epoch_step)
+            _log_scalar(summary_writer, f"recall/val_recall@{k}", metrics[f"recall@{k}"], epoch_step)
+            _log_scalar(summary_writer, f"ndcg/val_ndcg@{k}", metrics[f"ndcg@{k}"], epoch_step)
+            _log_scalar(summary_writer, "mrr/val_mrr", metrics["mrr"], epoch_step)
+
+            # Log embedding histograms periodically
+            histogram_freq = tb_cfg.get("histogram_freq", 0)
+            if histogram_freq > 0 and epoch % histogram_freq == 0:
+                _log_embedding_histograms(student_tower, scholarship_tower, summary_writer, epoch_step)
+
         print(
             f"Epoch {epoch:02d}/{epochs} | "
             f"train_loss={train_loss:.4f}  val_loss={val_loss:.4f} | "
@@ -110,6 +166,10 @@ def main():
         )
 
     callback.on_train_end()
+
+    # ── Close TensorBoard writer ──────────────────────────────────────────────
+    if summary_writer is not None:
+        summary_writer.close()
     print(f"Checkpoints: {cfg['output']['checkpoint_dir']}")
 
 

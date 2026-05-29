@@ -179,10 +179,18 @@ class StudentProfile(BaseModel):
 
 
 class ScholarshipResult(BaseModel):
-    """Single scholarship recommendation result."""
+    """Single scholarship recommendation result.
+
+    The `recommendation` field is currently a placeholder (empty string).
+    Future: will contain LLM-generated personalized recommendation for the student.
+    """
     scholarship_id: str
     score: float
     rank: int
+    recommendation: str = Field(
+        default="",
+        description="Personalized recommendation explaining why this scholarship is a match",
+    )
     metadata: dict
 
 
@@ -242,6 +250,10 @@ def create_app(engine: InferenceEngine) -> FastAPI:
             results = engine.recommend(student.model_dump(), k=k)
         except Exception as exc:
             raise HTTPException(status_code=500, detail=str(exc))
+
+        # Add placeholder recommendation field (future: LLM-generated per student)
+        for r in results:
+            r["recommendation"] = ""
 
         return RecommendationResponse(
             recommendations=[ScholarshipResult(**r) for r in results],
