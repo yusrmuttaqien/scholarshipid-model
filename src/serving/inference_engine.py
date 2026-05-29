@@ -3,12 +3,15 @@
 Design:
 - Student embeddings are computed on-the-fly per request
 - Scholarship embeddings are cached and refreshed on demand
-- Reuses existing encoding logic from feature_engineering (single source of truth)
+- Retraining runs asynchronously in a background thread
+
+Imports from sibling modules:
+- config: _print, ServingConfig, STUDENT_JSON_COLS, SCHOLARSHIP_JSON_COLS
+- helpers: student_profile_to_csv_schema, _parse_csv_with_json, etc.
 """
 import sys
 import threading
 from datetime import datetime, timezone
-from io import StringIO
 from typing import Optional
 
 import numpy as np
@@ -24,111 +27,16 @@ from src.utils.feature_engineering import (
     encode_student,
     encode_text,
     get_sbert_model,
-    normalize_json_columns as _normalize_json_columns,
 )
 from src.trainers.training_loop import run_training
 
-def _print(msg: str) -> None:
-    """Print a message to stdout (flushed for live terminal visibility)."""
-    print(msg, flush=True)
-
-
-def student_profile_to_csv_schema(student_data: dict) -> dict:
-    """Convert flat API student profile to CSV-compatible schema for encode_student.
-
-    The API accepts flat fields (e.g. toefl_score=65), but encode_student expects
-    CSV-compatible structures (e.g. language_proficiency=[{"test_type":"toefl","score":65}]).
-    """
-    row = dict(student_data)
-
-    # Build language_proficiency as list of dicts (expected by encode_student)
-    lang_prof = []
-    if student_data.get("toefl_score", 0) > 0:
-        lang_prof.append({"test_type": "toefl", "score": student_data["toefl_score"]})
-    if student_data.get("ielts_score", 0) > 0:
-        lang_prof.append({"test_type": "ielts", "score": student_data["ielts_score"]})
-    row["language_proficiency"] = lang_prof
-
-    # olympiad_subjects: convert comma-separated string to list if needed
-    olympiad_subjects_raw = student_data.get("olympiad_subjects") or []
-    if isinstance(olympiad_subjects_raw, str) and olympiad_subjects_raw:
-        row["olympiad_subjects"] = [s.strip() for s in olympiad_subjects_raw.split(",")]
-    else:
-        row["olympiad_subjects"] = olympiad_subjects_raw
-
-    # target_countries: convert comma-separated string to list if needed
-    target_countries_raw = student_data.get("target_countries")
-    if isinstance(target_countries_raw, str) and target_countries_raw:
-        row["target_countries"] = [c.strip() for c in target_countries_raw.split(",")]
-    else:
-        row["target_countries"] = target_countries_raw
-
-    return row
-
-
-def _parse_csv_with_json(csv_text: str, json_cols: list[str]) -> pd.DataFrame:
-    """Parse CSV text and decode JSON columns back to proper Python types.
-
-    Args:
-        csv_text: Raw CSV string content.
-        json_cols: List of column names that contain JSON-encoded values.
-
-    Returns:
-        DataFrame with JSON columns decoded into proper Python types (lists, dicts).
-    """
-    df = pd.read_csv(StringIO(csv_text))
-    return _normalize_json_columns(df, json_cols)
-
-
-def _build_scholarship_metadata(df) -> list[dict]:
-    """Extract lightweight metadata from scholarship DataFrame for API responses."""
-    metadata = []
-    for _, row in df.iterrows():
-        metadata.append({
-            "scholarship_id": row.get("scholarship_id"),
-            "host_country": row.get("host_country"),
-            "host_region": row.get("host_region"),
-            "funding_is_full_funding": bool(row.get("funding_is_full_funding", False)),
-        })
-    return metadata
-
-
-def _scholarship_to_metadata(sch: dict) -> dict:
-    """Convert scholarship dict to lightweight metadata for API responses."""
-    return {
-        "scholarship_id": sch.get("scholarship_id"),
-        "host_country": sch.get("host_country"),
-        "host_region": sch.get("host_region"),
-        "funding_is_full_funding": bool(sch.get("funding_is_full_funding", False)),
-    }
-
-
-# ── Student/Scholarship JSON column schemas (single source of truth) ─────
-
-_STUDENT_JSON_COLS = ["language_proficiency", "olympiad_subjects", "target_countries"]
-_SCHOLARSHIP_JSON_COLS = [
-    "eligible_nationalities", "eligible_degree_levels",
-    "eligible_high_school_tracks", "eligible_fields",
-    "preferred_school_tier", "language_requirements",
-    "selection_criteria", "career_track_preference",
-]
-
-
-class ServingConfig:
-    """Configuration for the serving layer loaded from configs/serving.yaml."""
-
-    def __init__(self, config_path: str = "configs/serving.yaml"):
-        with open(config_path) as f:
-            cfg = yaml.safe_load(f)
-
-        self.student_tower_path: str = cfg["models"]["student_tower"]
-        self.scholarship_tower_path: str = cfg["models"]["scholarship_tower"]
-
-        self.server_host: str = cfg["server"]["host"]
-        self.server_port: int = cfg["server"]["port"]
-        self.cors_origins: str = cfg["server"]["cors_origins"]
-        self.auth_required: bool = cfg["server"].get("auth_required", False)
-        self.auth_token: str = cfg["server"].get("auth_token", "")
+from .config import _print, ServingConfig, STUDENT_JSON_COLS, SCHOLARSHIP_JSON_COLS
+from .helpers import (
+    student_profile_to_csv_schema,
+    _parse_csv_with_json,
+    _build_scholarship_metadata,
+    _scholarship_to_metadata,
+)
 
 
 class InferenceEngine:
@@ -325,34 +233,7 @@ class InferenceEngine:
 
     def _export_embeddings(self, scholarships_df: pd.DataFrame) -> None:
         """Export scholarship embeddings after training."""
-        sch_struct_list = []
-        sch_text_list = []
-
-        for _, row in scholarships_df.iterrows():
-            sch_dict = row.to_dict()
-            sch_struct = encode_scholarship(sch_dict)
-            sch_struct_list.append(sch_struct)
-
-            text_parts = []
-            for field in ["mission_statement", "target_recipient_profile"]:
-                val = sch_dict.get(field, "")
-                if val:
-                    text_parts.append(str(val))
-            sch_text_raw = " ".join(text_parts) if text_parts else ""
-            sch_text_list.append(sch_text_raw)
-
-        sch_struct = np.array(sch_struct_list, dtype=np.float32)
-        sch_text_emb = encode_text(sch_text_list)
-        sch_feat = np.concatenate([sch_struct, sch_text_emb], axis=1)
-
-        self._sch_emb = self.scholarship_tower(
-            sch_feat, training=False
-        ).numpy()
-
-        self._sch_ids = scholarships_df["scholarship_id"].tolist()
-        self._sch_metadata = _build_scholarship_metadata(scholarships_df)
-
-        _print(f"  Scholarship embeddings exported: {len(self._sch_ids)} scholarships")
+        self._refresh_from_df(scholarships_df)
 
     def retrain_from_csvs(
         self,
@@ -387,19 +268,19 @@ class InferenceEngine:
             feedbacks_df = pd.read_csv(f"{raw_path}/feedback.csv")
 
             # ── Normalize existing data to ensure consistent JSON types ────
-            students_df = _normalize_json_columns(students_df, _STUDENT_JSON_COLS)
-            scholarships_df = _normalize_json_columns(scholarships_df, _SCHOLARSHIP_JSON_COLS)
+            students_df = self._normalize_json_columns(students_df, STUDENT_JSON_COLS)
+            scholarships_df = self._normalize_json_columns(scholarships_df, SCHOLARSHIP_JSON_COLS)
 
             # ── 2. Merge with new data from request ────────────────────────
             if students_csv_text:
                 new_students = _parse_csv_with_json(
-                    students_csv_text, _STUDENT_JSON_COLS
+                    students_csv_text, STUDENT_JSON_COLS
                 )
                 students_df = self._merge_csvs(students_df, new_students, "student_id")
 
             if scholarships_csv_text:
                 new_scholarships = _parse_csv_with_json(
-                    scholarships_csv_text, _SCHOLARSHIP_JSON_COLS
+                    scholarships_csv_text, SCHOLARSHIP_JSON_COLS
                 )
                 scholarships_df = self._merge_csvs(
                     scholarships_df, new_scholarships, "scholarship_id"
@@ -541,45 +422,9 @@ class InferenceEngine:
         scholarships_df = pd.read_csv(f"{raw_path}/scholarships.csv")
 
         # Parse JSON columns (language_requirements, selection_criteria)
-        scholarships_df = _normalize_json_columns(scholarships_df, _SCHOLARSHIP_JSON_COLS)
+        scholarships_df = self._normalize_json_columns(scholarships_df, SCHOLARSHIP_JSON_COLS)
 
-        # Encode each scholarship on-the-fly
-        sch_struct_list = []
-        sch_text_list = []
-
-        for _, row in scholarships_df.iterrows():
-            # Build dict from row
-            sch_dict = row.to_dict()
-            sch_struct = encode_scholarship(sch_dict)
-            sch_struct_list.append(sch_struct)
-
-            # Text embedding from mission_statement + target_recipient_profile
-            text_parts = []
-            for field in ["mission_statement", "target_recipient_profile"]:
-                val = sch_dict.get(field, "")
-                if val:
-                    text_parts.append(str(val))
-            sch_text_raw = " ".join(text_parts) if text_parts else ""
-            sch_text_list.append(sch_text_raw)
-
-        # Stack structured features
-        sch_struct = np.array(sch_struct_list, dtype=np.float32)
-
-        # Encode text features via SBERT
-        sch_text_emb = encode_text(sch_text_list)
-
-        # Concatenate structured + text features, run through scholarship tower
-        sch_feat = np.concatenate([sch_struct, sch_text_emb], axis=1)
-        self._sch_emb = self.scholarship_tower(
-            sch_feat, training=False
-        ).numpy()  # (N, 128) L2-normalized
-
-        # Build metadata for API responses
-        self._sch_ids = scholarships_df["scholarship_id"].tolist()
-        self._sch_metadata = _build_scholarship_metadata(scholarships_df)
-
-        print(f"Scholarship cache refreshed: {len(self._sch_ids)} scholarships "
-              f"(embedding shape {self._sch_emb.shape})")
+        self._refresh_from_df(scholarships_df)
 
     def refresh_from_csv(self, csv_text: str):
         """Rebuild scholarship embedding cache from CSV text.
@@ -593,45 +438,9 @@ class InferenceEngine:
             csv_text: Raw CSV text content to parse.
         """
         # Parse CSV from string using shared parser
-        scholarships_df = _parse_csv_with_json(csv_text, _SCHOLARSHIP_JSON_COLS)
+        scholarships_df = _parse_csv_with_json(csv_text, SCHOLARSHIP_JSON_COLS)
 
-        # Encode each scholarship on-the-fly
-        sch_struct_list = []
-        sch_text_list = []
-
-        for _, row in scholarships_df.iterrows():
-            # Build dict from row
-            sch_dict = row.to_dict()
-            sch_struct = encode_scholarship(sch_dict)
-            sch_struct_list.append(sch_struct)
-
-            # Text embedding from mission_statement + target_recipient_profile
-            text_parts = []
-            for field in ["mission_statement", "target_recipient_profile"]:
-                val = sch_dict.get(field, "")
-                if val:
-                    text_parts.append(str(val))
-            sch_text_raw = " ".join(text_parts) if text_parts else ""
-            sch_text_list.append(sch_text_raw)
-
-        # Stack structured features
-        sch_struct = np.array(sch_struct_list, dtype=np.float32)
-
-        # Encode text features via SBERT
-        sch_text_emb = encode_text(sch_text_list)
-
-        # Concatenate structured + text features, run through scholarship tower
-        sch_feat = np.concatenate([sch_struct, sch_text_emb], axis=1)
-        self._sch_emb = self.scholarship_tower(
-            sch_feat, training=False
-        ).numpy()  # (N, 128) L2-normalized
-
-        # Build metadata for API responses
-        self._sch_ids = scholarships_df["scholarship_id"].tolist()
-        self._sch_metadata = _build_scholarship_metadata(scholarships_df)
-
-        print(f"Scholarship cache refreshed from CSV: {len(self._sch_ids)} scholarships "
-              f"(embedding shape {self._sch_emb.shape})")
+        self._refresh_from_df(scholarships_df)
 
     def add_scholarships(self, new_scholarships: list[dict]) -> int:
         """Encode and cache new scholarships without a full refresh.
@@ -707,6 +516,55 @@ class InferenceEngine:
 
     # ── Private helpers ───────────────────────────────────────────────────
 
+    def _normalize_json_columns(self, df: pd.DataFrame, json_cols: list[str]) -> pd.DataFrame:
+        """Normalize JSON columns in a DataFrame using the shared function."""
+        from src.utils.feature_engineering import normalize_json_columns as _normalize_json_columns
+        return _normalize_json_columns(df, json_cols)
+
+    def _refresh_from_df(self, scholarships_df: pd.DataFrame) -> None:
+        """Build scholarship embedding cache from a DataFrame.
+
+        Shared logic used by refresh_scholarships(), refresh_from_csv(), and
+        _export_embeddings().
+        """
+        # Encode each scholarship on-the-fly
+        sch_struct_list = []
+        sch_text_list = []
+
+        for _, row in scholarships_df.iterrows():
+            # Build dict from row
+            sch_dict = row.to_dict()
+            sch_struct = encode_scholarship(sch_dict)
+            sch_struct_list.append(sch_struct)
+
+            # Text embedding from mission_statement + target_recipient_profile
+            text_parts = []
+            for field in ["mission_statement", "target_recipient_profile"]:
+                val = sch_dict.get(field, "")
+                if val:
+                    text_parts.append(str(val))
+            sch_text_raw = " ".join(text_parts) if text_parts else ""
+            sch_text_list.append(sch_text_raw)
+
+        # Stack structured features
+        sch_struct = np.array(sch_struct_list, dtype=np.float32)
+
+        # Encode text features via SBERT
+        sch_text_emb = encode_text(sch_text_list)
+
+        # Concatenate structured + text features, run through scholarship tower
+        sch_feat = np.concatenate([sch_struct, sch_text_emb], axis=1)
+        self._sch_emb = self.scholarship_tower(
+            sch_feat, training=False
+        ).numpy()  # (N, 128) L2-normalized
+
+        # Build metadata for API responses
+        self._sch_ids = scholarships_df["scholarship_id"].tolist()
+        self._sch_metadata = _build_scholarship_metadata(scholarships_df)
+
+        print(f"Scholarship cache refreshed: {len(self._sch_ids)} scholarships "
+              f"(embedding shape {self._sch_emb.shape})")
+
     def _build_student_text(self, student_data: dict) -> str:
         """Build text string for SBERT encoding from student narrative fields."""
         parts = []
@@ -723,4 +581,3 @@ class InferenceEngine:
         """
         scores = self._sch_emb @ stu_emb
         return scores
-
