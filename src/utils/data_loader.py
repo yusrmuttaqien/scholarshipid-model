@@ -1,12 +1,15 @@
 """
 Data loading dan tf.data.Dataset builder untuk Two-Tower training.
 """
-import json
 import numpy as np
 import pandas as pd
 import tensorflow as tf
 
-from src.utils.feature_engineering import encode_student, encode_scholarship
+from src.utils.feature_engineering import (
+    encode_scholarship,
+    encode_student,
+    normalize_json_columns,
+)
 
 AUTOTUNE = tf.data.AUTOTUNE
 SEED = 42
@@ -56,17 +59,16 @@ def load_precomputed_features(cfg: dict):
     students_df     = pd.read_csv(f"{raw_path}/students.csv")
     scholarships_df = pd.read_csv(f"{raw_path}/scholarships.csv")
 
-    # Parse JSON columns
-    for col in ["language_proficiency", "olympiad_subjects", "target_countries"]:
-        students_df[col] = students_df[col].apply(
-            lambda x: json.loads(x) if isinstance(x, str) else x
-        )
-    for col in ["eligible_nationalities", "eligible_degree_levels",
-                "eligible_high_school_tracks", "eligible_fields",
-                "language_requirements", "selection_criteria"]:
-        scholarships_df[col] = scholarships_df[col].apply(
-            lambda x: json.loads(x) if isinstance(x, str) else x
-        )
+    # Normalize JSON columns (language_proficiency, olympiad_subjects, target_countries)
+    students_df = normalize_json_columns(students_df, ["language_proficiency", "olympiad_subjects", "target_countries"])
+
+    # Normalize scholarship JSON columns
+    scholarships_df = normalize_json_columns(
+        scholarships_df,
+        ["eligible_nationalities", "eligible_degree_levels",
+         "eligible_high_school_tracks", "eligible_fields",
+         "language_requirements", "selection_criteria"],
+    )
 
     # Encode structured features
     print("Encoding structured features...")

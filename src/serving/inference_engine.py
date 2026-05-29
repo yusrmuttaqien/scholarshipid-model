@@ -5,7 +5,6 @@ Design:
 - Scholarship embeddings are cached and refreshed on demand
 - Reuses existing encoding logic from feature_engineering (single source of truth)
 """
-import json
 import sys
 import threading
 from datetime import datetime, timezone
@@ -25,8 +24,9 @@ from src.utils.feature_engineering import (
     encode_student,
     encode_text,
     get_sbert_model,
+    normalize_json_columns as _normalize_json_columns,
 )
-from src.trainers.trainer import Trainer, sampled_softmax_loss_weighted
+from src.trainers.training_loop import run_training
 
 def _print(msg: str) -> None:
     """Print a message to stdout (flushed for live terminal visibility)."""
@@ -64,40 +64,6 @@ def student_profile_to_csv_schema(student_data: dict) -> dict:
         row["target_countries"] = target_countries_raw
 
     return row
-
-
-def _normalize_json_columns(df: pd.DataFrame, json_cols: list[str]) -> pd.DataFrame:
-    """Normalize JSON columns in a DataFrame by parsing string representations.
-
-    When data is loaded from CSV via pd.read_csv(), JSON columns come back as
-    strings (e.g., '["indonesia"]'). After merging with parsed incoming data that
-    has proper lists, the column becomes mixed types. This function ensures all
-    values are properly decoded Python objects.
-
-    Also handles string representations of dicts like '{"key": "value"}'.
-    """
-    for col in json_cols:
-        if col not in df.columns:
-            continue
-
-        def _parse(val):
-            if isinstance(val, str):
-                val = val.strip()
-                if val.startswith("["):
-                    try:
-                        return json.loads(val)
-                    except (json.JSONDecodeError, ValueError):
-                        pass
-                elif val.startswith("{"):
-                    try:
-                        return json.loads(val)
-                    except (json.JSONDecodeError, ValueError):
-                        pass
-            return val
-
-        df[col] = df[col].apply(_parse)
-
-    return df
 
 
 def _parse_csv_with_json(csv_text: str, json_cols: list[str]) -> pd.DataFrame:
@@ -276,50 +242,86 @@ class InferenceEngine:
         cfg: dict,
         stu_indices: np.ndarray,
         sch_indices: np.ndarray,
-    ) -> None:
-        """Train the model on merged data using existing weights (finetuning)."""
+        # ── For evaluation metrics (Recall/NDCG/MRR) ─────────────
+        stu_id_to_idx: Optional[dict] = None,
+        sch_ids: Optional[list] = None,
+    ) -> dict:
+        """Train the model on merged data using existing weights (finetuning).
+
+        Splits feedback into train (80%) / val (20%) by timestamp.
+        Returns metrics dict with final training results.
+        """
         feedback_weights = cfg["feedback_weights"]
         epochs = cfg["training"]["epochs"]
         temp = cfg["model"]["temperature"]
+        tb_cfg = cfg.get("tensorboard", {})
 
         # Build full feature matrices for ALL students and scholarships
         stu_feat_all = np.concatenate([stu_struct, stu_text_emb], axis=1)  # (N_stu, 506)
         sch_feat_all = np.concatenate([sch_struct, sch_text_emb], axis=1)  # (N_sch, 509)
 
+        # Sort feedback by timestamp for time-based split
+        feedback_df = feedback_df.sort_values("timestamp").reset_index(drop=True)
+        n_total = len(feedback_df)
+        n_train = int(0.8 * n_total)
+
+        train_df = feedback_df.iloc[:n_train]
+        val_df = feedback_df.iloc[n_train:]
+
+        _print(f"  Feedback split — train:{len(train_df)}  val:{len(val_df)}")
+
         # Build per-sample features from feedback rows
-        weights = np.array(
+        weights_all = np.array(
             [feedback_weights[ft] for ft in feedback_df["feedback_type"]], dtype=np.float32
         )
+        train_weights = weights_all[:n_train]
+        val_weights = weights_all[n_train:]
 
-        stu_feat = stu_feat_all[stu_indices]  # (M, 506) where M = len(feedback_df)
-        sch_feat = sch_feat_all[sch_indices]  # (M, 509)
+        stu_feat_all_fb = stu_feat_all[stu_indices]  # (M, 506) where M = len(feedback_df)
+        sch_feat_all_fb = sch_feat_all[sch_indices]  # (M, 509)
+        train_stu_feat = stu_feat_all_fb[:n_train]
+        val_stu_feat = stu_feat_all_fb[n_train:]
+        train_sch_feat = sch_feat_all_fb[:n_train]
+        val_sch_feat = sch_feat_all_fb[n_train:]
 
-        # ── Build model (reuse loaded towers) ────────────────────────────
+        # ── Build optimizer (reuse loaded towers) ────────────────────────
         student_tower = self.student_tower
         scholarship_tower = self.scholarship_tower
-        optimizer = tf.keras.optimizers.Adam(learning_rate=cfg["training"]["learning_rate"])
+        # Use lower LR for fine-tuning so we don't destroy pre-trained weights
+        finetune_lr = cfg["training"]["learning_rate"] / 10
+        optimizer = tf.keras.optimizers.Adam(learning_rate=finetune_lr)
 
-        # ── Train ──────────────────────────────────────────────────────
+        # ── Train with validation + TensorBoard ──────────────────────────
         _print(f"  Training for {epochs} epochs (finetuning from existing weights)...")
 
-        for epoch in range(1, epochs + 1):
-            with tf.GradientTape() as tape:
-                stu_emb = student_tower(stu_feat, training=True)
-                sch_emb = scholarship_tower(sch_feat, training=True)
-                loss = sampled_softmax_loss_weighted(stu_emb, sch_emb, weights, temp)
+        metrics = run_training(
+            student_tower=student_tower,
+            scholarship_tower=scholarship_tower,
+            train_stu_feat=train_stu_feat,
+            train_sch_feat=train_sch_feat,
+            train_weights=train_weights,
+            val_stu_feat=val_stu_feat,
+            val_sch_feat=val_sch_feat,
+            val_weights=val_weights,
+            optimizer=optimizer,
+            temperature=temp,
+            epochs=epochs,
+            checkpoint_dir=cfg["output"]["checkpoint_dir"],
+            log_dir=cfg["output"]["log_dir"],
+            tb_enabled=tb_cfg.get("enabled", False),
+            k=cfg["evaluation"]["k_values"][0],
+            # ── Evaluation data (for Recall/NDCG/MRR) ───────────────
+            val_df=val_df,
+            stu_struct=stu_struct,
+            sch_struct=sch_struct,
+            stu_text_emb=stu_text_emb,
+            sch_text_emb=sch_text_emb,
+            stu_id_to_idx=stu_id_to_idx,
+            sch_ids=sch_ids,
+        )
 
-            all_vars = (student_tower.trainable_variables +
-                        scholarship_tower.trainable_variables)
-            grads = tape.gradient(loss, all_vars)
-            optimizer.apply_gradients(zip(grads, all_vars))
-
-            _print(f"    Epoch {epoch}/{epochs} — loss: {loss:.4f}")
-
-        # ── Save updated weights ───────────────────────────────────────
-        checkpoint_dir = cfg["output"]["checkpoint_dir"]
-        student_tower.save(f"{checkpoint_dir}/student_tower_best.keras")
-        scholarship_tower.save(f"{checkpoint_dir}/scholarship_tower_best.keras")
-        _print(f"  Saved updated weights to {checkpoint_dir}")
+        _print(f"  Saved updated weights to {cfg['output']['checkpoint_dir']}")
+        return metrics
 
     def _export_embeddings(self, scholarships_df: pd.DataFrame) -> None:
         """Export scholarship embeddings after training."""
@@ -447,9 +449,15 @@ class InferenceEngine:
                 [sch_id_map[sid] for sid in feedbacks_df["scholarship_id"]], dtype=np.int32
             )
 
+            # Build ID mappings for evaluation metrics (Recall/NDCG/MRR)
+            stu_id_to_idx = {sid: i for i, sid in enumerate(students_df["student_id"])}
+            sch_ids = scholarships_df["scholarship_id"].tolist()
+
             self._train_model(
                 stu_struct, sch_struct, stu_text_emb, sch_text_emb,
-                feedbacks_df, cfg, stu_indices, sch_indices
+                feedbacks_df, cfg, stu_indices, sch_indices,
+                stu_id_to_idx=stu_id_to_idx,
+                sch_ids=sch_ids,
             )
 
             # ── 7. Export updated embeddings ───────────────────────────────

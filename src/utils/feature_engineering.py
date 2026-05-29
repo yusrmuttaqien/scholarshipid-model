@@ -3,6 +3,9 @@ Feature engineering untuk Two-Tower recommendation system.
 
 Semua encoding logic ada di sini — dipanggil oleh data_loader.py dan inference_engine.py.
 """
+import ast
+import json
+
 import numpy as np
 
 # ── Vocabulary (fixed dari synthetic data) ────────────────────────────────────
@@ -46,6 +49,47 @@ STU_INPUT_DIM  = STU_STRUCT_DIM + TEXT_EMB_DIM  # 506
 SCH_INPUT_DIM  = SCH_STRUCT_DIM + TEXT_EMB_DIM  # 509
 
 SBERT_MODEL_NAME = "all-MiniLM-L6-v2"
+
+# ── JSON column normalization ────────────────────────────────────────────────
+
+
+def normalize_json_columns(df, json_cols: list[str]):
+    """Normalize JSON columns in a DataFrame by parsing string representations.
+
+    When data is loaded from CSV via pd.read_csv(), JSON columns come back as
+    strings (e.g., '["indonesia"]'). This function ensures all values are properly
+    decoded Python objects (lists, dicts).
+
+    Handles both standard JSON ('{"key": "value"}') and Python-style dicts
+    with single quotes ("{'key': 'value'}").
+    """
+    for col in json_cols:
+        if col not in df.columns:
+            continue
+
+        def _parse(val):
+            if isinstance(val, str):
+                val = val.strip()
+                if val.startswith("["):
+                    try:
+                        return json.loads(val)
+                    except (json.JSONDecodeError, ValueError):
+                        pass
+                elif val.startswith("{"):
+                    try:
+                        return json.loads(val)
+                    except (json.JSONDecodeError, ValueError):
+                        pass
+                    try:
+                        return ast.literal_eval(val)
+                    except (ValueError, SyntaxError):
+                        pass
+            return val
+
+        df[col] = df[col].apply(_parse)
+
+    return df
+
 
 # ── Encoding helpers ──────────────────────────────────────────────────────────
 
