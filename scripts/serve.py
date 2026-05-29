@@ -10,6 +10,10 @@ Override model paths via CLI flags if needed:
     python scripts/serve.py --student-tower outputs/checkpoints/student_tower_best.keras \\
                             --scholarship-tower outputs/checkpoints/scholarship_tower_best.keras
 """
+import os
+os.environ["OMP_NUM_THREADS"] = "1"
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
 import argparse
 
 import uvicorn

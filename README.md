@@ -90,12 +90,12 @@ python scripts/train.py --config configs/default.yaml # or python -m scripts.tra
 # Step 3 — Evaluasi pada test set
 python scripts/evaluate.py \  # or python -m scripts.evaluate
   --config configs/default.yaml \
-  --student_checkpoint outputs/checkpoints/student_tower_best.weights.h5 \
-  --scholarship_checkpoint outputs/checkpoints/scholarship_tower_best.weights.h5
+  --student_checkpoint outputs/checkpoints/student_tower_best.keras \
+  --scholarship_checkpoint outputs/checkpoints/scholarship_tower_best.keras
 
 # Step 4 — Export scholarship embeddings untuk serving
 python scripts/export_embeddings.py \  # or python -m scripts.export_embeddings
-  --scholarship_checkpoint outputs/checkpoints/scholarship_tower_best.weights.h5
+  --scholarship_checkpoint outputs/checkpoints/scholarship_tower_best.keras
 ```
 
 ## Data
@@ -112,10 +112,10 @@ After training, start the inference server:
 
 ```bash
 # Start the serving server
-python scripts/serve.py
+python scripts/serve.py # or python -m scripts.serve
 ```
 
-Server runs on `http://localhost:8001` with the following endpoints:
+Server runs on `http://localhost:8000` with the following endpoints:
 
 ### GET `/docs` — Swagger docs
 
