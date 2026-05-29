@@ -3,10 +3,12 @@
 Endpoints:
     POST /recommend  — Recommend top-K scholarships for a student profile
     POST /refresh    — Refresh scholarship cache (admin)
-    GET  /health     — Health check
+    POST /retrain    — Retrain model with new data (async, admin)
+    GET  /health     — Health check (includes retraining status)
 """
 from __future__ import annotations
 
+import threading
 from http import HTTPStatus
 from typing import Optional
 
@@ -206,6 +208,20 @@ class RefreshResponse(BaseModel):
     total_scholarships: int
 
 
+class RetrainStartResponse(BaseModel):
+    """Response for /retrain endpoint (immediate, async)."""
+    status: str
+    message: str
+
+
+class RetrainingInfo(BaseModel):
+    """Retraining status info."""
+    status: str  # idle | training | done | error
+    started_at: Optional[str] = None
+    finished_at: Optional[str] = None
+    error: Optional[str] = None
+
+
 # ── Application factory ───────────────────────────────────────────────────
 
 def create_app(engine: InferenceEngine) -> FastAPI:
@@ -298,14 +314,87 @@ def create_app(engine: InferenceEngine) -> FastAPI:
             total_scholarships=len(engine._sch_ids),
         )
 
+    @app.post("/retrain", response_model=RetrainStartResponse)
+    async def retrain(
+        auth_token: Optional[str] = Depends(_get_auth_token),
+        students: Optional[UploadFile] = File(None),
+        scholarships: Optional[UploadFile] = File(None),
+        feedbacks: Optional[UploadFile] = File(None),
+    ):
+        """Initiate model retraining with new data.
+
+        Accepts 3 optional CSV files in the request body (multipart/form-data):
+        - students: New student records (by student_id)
+        - scholarships: New scholarship records (by scholarship_id)
+        - feedbacks: New feedback records (by timestamp or feedback_id)
+
+        At least one file is required. Training runs asynchronously in a background thread.
+        Requires admin authentication when auth_required is enabled.
+
+        The retraining process:
+        1. Merges new data with existing disk data by ID
+        2. Saves merged data back to disk
+        3. Precomputes text embeddings on full merged datasets
+        4. Trains model (finetuning from existing weights) on all feedback data
+        5. Exports updated scholarship embeddings
+
+        After completion, call /recommend without refresh — the engine auto-loads
+        the latest embeddings from disk.
+        """
+        # Validate at least one file provided
+        if not any([students, scholarships, feedbacks]):
+            raise HTTPException(
+                status_code=422,
+                detail="At least one file is required (students, scholarships, or feedbacks)",
+            )
+
+        # Auth check
+        if engine.serving_config.auth_required:
+            if auth_token is None or auth_token != engine.serving_config.auth_token:
+                raise HTTPException(
+                    status_code=HTTPStatus.UNAUTHORIZED,
+                    detail="Invalid or missing authorization token",
+                )
+
+        def _do_retrain():
+            csv_parts = {}
+            if students and students.filename:
+                csv_parts["students"] = students.file.read().decode("utf-8")
+            if scholarships and scholarships.filename:
+                csv_parts["scholarships"] = scholarships.file.read().decode("utf-8")
+            if feedbacks and feedbacks.filename:
+                csv_parts["feedbacks"] = feedbacks.file.read().decode("utf-8")
+
+            engine.retrain_from_csvs(
+                students_csv_text=csv_parts.get("students", None),
+                scholarships_csv_text=csv_parts.get("scholarships", None),
+                feedbacks_csv_text=csv_parts.get("feedbacks", None),
+            )
+
+        # Start training in background thread
+        threading.Thread(target=_do_retrain, daemon=True).start()
+
+        return RetrainStartResponse(
+            status="training_started",
+            message="Retraining initiated. Check /health for status.",
+        )
+
     @app.get("/health")
     async def health():
-        """Health check — returns model loading status."""
+        """Health check — returns model loading status and retraining info."""
+        retrain_info = {
+            "status": engine._retraining_status,
+            "started_at": engine._retraining_started_at.isoformat() if engine._retraining_started_at else None,
+            "finished_at": engine._retraining_finished_at.isoformat() if engine._retraining_finished_at else None,
+            "error": engine._retraining_error,
+        }
+
         return {
             "status": "healthy",
             "student_tower_loaded": engine.student_tower is not None,
             "scholarship_tower_loaded": engine.scholarship_tower is not None,
             "cached_scholarships": len(engine._sch_ids),
+            "retraining": retrain_info,
         }
 
     return app

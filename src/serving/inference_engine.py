@@ -5,21 +5,32 @@ Design:
 - Scholarship embeddings are cached and refreshed on demand
 - Reuses existing encoding logic from feature_engineering (single source of truth)
 """
+import json
+import sys
+import threading
+from datetime import datetime, timezone
+from io import StringIO
 from typing import Optional
 
-import json
 import numpy as np
 import pandas as pd
 import tensorflow as tf
 import yaml
 
 from src.models.student_tower import L2Normalize
+from src.models.scholarship_tower import build_scholarship_tower
+from src.models.student_tower import build_student_tower
 from src.utils.feature_engineering import (
     encode_scholarship,
     encode_student,
     encode_text,
     get_sbert_model,
 )
+from src.trainers.trainer import Trainer, sampled_softmax_loss_weighted
+
+def _print(msg: str) -> None:
+    """Print a message to stdout (flushed for live terminal visibility)."""
+    print(msg, flush=True)
 
 
 def student_profile_to_csv_schema(student_data: dict) -> dict:
@@ -53,6 +64,88 @@ def student_profile_to_csv_schema(student_data: dict) -> dict:
         row["target_countries"] = target_countries_raw
 
     return row
+
+
+def _normalize_json_columns(df: pd.DataFrame, json_cols: list[str]) -> pd.DataFrame:
+    """Normalize JSON columns in a DataFrame by parsing string representations.
+
+    When data is loaded from CSV via pd.read_csv(), JSON columns come back as
+    strings (e.g., '["indonesia"]'). After merging with parsed incoming data that
+    has proper lists, the column becomes mixed types. This function ensures all
+    values are properly decoded Python objects.
+
+    Also handles string representations of dicts like '{"key": "value"}'.
+    """
+    for col in json_cols:
+        if col not in df.columns:
+            continue
+
+        def _parse(val):
+            if isinstance(val, str):
+                val = val.strip()
+                if val.startswith("["):
+                    try:
+                        return json.loads(val)
+                    except (json.JSONDecodeError, ValueError):
+                        pass
+                elif val.startswith("{"):
+                    try:
+                        return json.loads(val)
+                    except (json.JSONDecodeError, ValueError):
+                        pass
+            return val
+
+        df[col] = df[col].apply(_parse)
+
+    return df
+
+
+def _parse_csv_with_json(csv_text: str, json_cols: list[str]) -> pd.DataFrame:
+    """Parse CSV text and decode JSON columns back to proper Python types.
+
+    Args:
+        csv_text: Raw CSV string content.
+        json_cols: List of column names that contain JSON-encoded values.
+
+    Returns:
+        DataFrame with JSON columns decoded into proper Python types (lists, dicts).
+    """
+    df = pd.read_csv(StringIO(csv_text))
+    return _normalize_json_columns(df, json_cols)
+
+
+def _build_scholarship_metadata(df) -> list[dict]:
+    """Extract lightweight metadata from scholarship DataFrame for API responses."""
+    metadata = []
+    for _, row in df.iterrows():
+        metadata.append({
+            "scholarship_id": row.get("scholarship_id"),
+            "host_country": row.get("host_country"),
+            "host_region": row.get("host_region"),
+            "funding_is_full_funding": bool(row.get("funding_is_full_funding", False)),
+        })
+    return metadata
+
+
+def _scholarship_to_metadata(sch: dict) -> dict:
+    """Convert scholarship dict to lightweight metadata for API responses."""
+    return {
+        "scholarship_id": sch.get("scholarship_id"),
+        "host_country": sch.get("host_country"),
+        "host_region": sch.get("host_region"),
+        "funding_is_full_funding": bool(sch.get("funding_is_full_funding", False)),
+    }
+
+
+# ── Student/Scholarship JSON column schemas (single source of truth) ─────
+
+_STUDENT_JSON_COLS = ["language_proficiency", "olympiad_subjects", "target_countries"]
+_SCHOLARSHIP_JSON_COLS = [
+    "eligible_nationalities", "eligible_degree_levels",
+    "eligible_high_school_tracks", "eligible_fields",
+    "preferred_school_tier", "language_requirements",
+    "selection_criteria", "career_track_preference",
+]
 
 
 class ServingConfig:
@@ -121,44 +214,269 @@ class InferenceEngine:
         self._sch_ids: list = []
         self._sch_metadata: list = []  # Raw scholarship dicts for API responses
 
+        # ── Retracking state ────────────────────────────────────────────────
+        self._retraining_lock = threading.Lock()
+        self._retraining_status: str = "idle"  # idle | training | done | error
+        self._retraining_started_at: Optional[datetime] = None
+        self._retraining_finished_at: Optional[datetime] = None
+        self._retraining_error: Optional[str] = None
+
     def _load_config(self) -> dict:
         with open(self.config_path) as f:
             return yaml.safe_load(f)
 
-    def initialize(self):
-        """Load both towers and build initial scholarship embedding cache."""
-        self.cfg = self._load_config()
+    # ── Retraining helpers ────────────────────────────────────────────────
 
-        custom = {"L2Normalize": L2Normalize}
+    def _merge_csvs(
+        self, existing_df: pd.DataFrame, new_df: pd.DataFrame, id_col: str
+    ) -> pd.DataFrame:
+        """Merge new rows with existing data by ID. New overwrites old."""
+        if new_df is None or len(new_df) == 0:
+            return existing_df
 
-        # Load student tower — used for encoding students at inference time
-        self.student_tower = tf.keras.models.load_model(
-            self.student_tower_path, custom_objects=custom
+        # Merge and deduplicate by ID (new entries win)
+        merged = pd.concat([existing_df, new_df]).drop_duplicates(
+            subset=[id_col], keep="last"
         )
-        print(f"Loaded student tower from {self.student_tower_path}")
+        _print(f"  Merged {len(new_df)} new rows → {len(merged)} total (by {id_col})")
+        return merged
 
-        # Load scholarship tower — used for encoding scholarships into the cache
-        self.scholarship_tower = tf.keras.models.load_model(
-            self.scholarship_tower_path, custom_objects=custom
+    def _precompute_text_embeddings(
+        self, students_df: pd.DataFrame, scholarships_df: pd.DataFrame
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Precompute text embeddings for students and scholarships.
+
+        Returns:
+            stu_text_emb: (N_stu, 384), sch_text_emb: (N_sch, 384)
+        """
+        _print("  Precomputing student text embeddings...")
+        stu_texts = (
+            students_df["personal_statement"].fillna("") + " " +
+            students_df["achievements_narrative"].fillna("") + " " +
+            students_df["future_goals"].fillna("")
+        ).tolist()
+        stu_text_emb = encode_text(stu_texts)
+
+        _print("  Precomputing scholarship text embeddings...")
+        sch_texts = (
+            scholarships_df["mission_statement"].fillna("") + " " +
+            scholarships_df["target_recipient_profile"].fillna("")
+        ).tolist()
+        sch_text_emb = encode_text(sch_texts)
+
+        return stu_text_emb, sch_text_emb
+
+    def _train_model(
+        self,
+        stu_struct: np.ndarray,
+        sch_struct: np.ndarray,
+        stu_text_emb: np.ndarray,
+        sch_text_emb: np.ndarray,
+        feedback_df: pd.DataFrame,
+        cfg: dict,
+        stu_indices: np.ndarray,
+        sch_indices: np.ndarray,
+    ) -> None:
+        """Train the model on merged data using existing weights (finetuning)."""
+        feedback_weights = cfg["feedback_weights"]
+        epochs = cfg["training"]["epochs"]
+        temp = cfg["model"]["temperature"]
+
+        # Build full feature matrices for ALL students and scholarships
+        stu_feat_all = np.concatenate([stu_struct, stu_text_emb], axis=1)  # (N_stu, 506)
+        sch_feat_all = np.concatenate([sch_struct, sch_text_emb], axis=1)  # (N_sch, 509)
+
+        # Build per-sample features from feedback rows
+        weights = np.array(
+            [feedback_weights[ft] for ft in feedback_df["feedback_type"]], dtype=np.float32
         )
-        print(f"Loaded scholarship tower from {self.scholarship_tower_path}")
 
-        # Warm-up SBERT model (lazy-loaded singleton in feature_engineering)
-        get_sbert_model()
-        print("SBERT model warmed up")
+        stu_feat = stu_feat_all[stu_indices]  # (M, 506) where M = len(feedback_df)
+        sch_feat = sch_feat_all[sch_indices]  # (M, 509)
 
-        # Build initial scholarship cache — always recompute on-the-fly
-        self.refresh_scholarships()
+        # ── Build model (reuse loaded towers) ────────────────────────────
+        student_tower = self.student_tower
+        scholarship_tower = self.scholarship_tower
+        optimizer = tf.keras.optimizers.Adam(learning_rate=cfg["training"]["learning_rate"])
+
+        # ── Train ──────────────────────────────────────────────────────
+        _print(f"  Training for {epochs} epochs (finetuning from existing weights)...")
+
+        for epoch in range(1, epochs + 1):
+            with tf.GradientTape() as tape:
+                stu_emb = student_tower(stu_feat, training=True)
+                sch_emb = scholarship_tower(sch_feat, training=True)
+                loss = sampled_softmax_loss_weighted(stu_emb, sch_emb, weights, temp)
+
+            all_vars = (student_tower.trainable_variables +
+                        scholarship_tower.trainable_variables)
+            grads = tape.gradient(loss, all_vars)
+            optimizer.apply_gradients(zip(grads, all_vars))
+
+            _print(f"    Epoch {epoch}/{epochs} — loss: {loss:.4f}")
+
+        # ── Save updated weights ───────────────────────────────────────
+        checkpoint_dir = cfg["output"]["checkpoint_dir"]
+        student_tower.save(f"{checkpoint_dir}/student_tower_best.keras")
+        scholarship_tower.save(f"{checkpoint_dir}/scholarship_tower_best.keras")
+        _print(f"  Saved updated weights to {checkpoint_dir}")
+
+    def _export_embeddings(self, scholarships_df: pd.DataFrame) -> None:
+        """Export scholarship embeddings after training."""
+        sch_struct_list = []
+        sch_text_list = []
+
+        for _, row in scholarships_df.iterrows():
+            sch_dict = row.to_dict()
+            sch_struct = encode_scholarship(sch_dict)
+            sch_struct_list.append(sch_struct)
+
+            text_parts = []
+            for field in ["mission_statement", "target_recipient_profile"]:
+                val = sch_dict.get(field, "")
+                if val:
+                    text_parts.append(str(val))
+            sch_text_raw = " ".join(text_parts) if text_parts else ""
+            sch_text_list.append(sch_text_raw)
+
+        sch_struct = np.array(sch_struct_list, dtype=np.float32)
+        sch_text_emb = encode_text(sch_text_list)
+        sch_feat = np.concatenate([sch_struct, sch_text_emb], axis=1)
+
+        self._sch_emb = self.scholarship_tower(
+            sch_feat, training=False
+        ).numpy()
+
+        self._sch_ids = scholarships_df["scholarship_id"].tolist()
+        self._sch_metadata = _build_scholarship_metadata(scholarships_df)
+
+        _print(f"  Scholarship embeddings exported: {len(self._sch_ids)} scholarships")
+
+    def retrain_from_csvs(
+        self,
+        students_csv_text: Optional[str] = None,
+        scholarships_csv_text: Optional[str] = None,
+        feedbacks_csv_text: Optional[str] = None,
+    ) -> dict:
+        """Full training pipeline: merge data → precompute embeddings → train → export.
+
+        This method runs in a background thread and updates _retraining_status.
+        """
+        with self._retraining_lock:
+            if self._retraining_status == "training":
+                return {"error": "Retraining already in progress"}
+
+            self._retraining_status = "training"
+            self._retraining_started_at = datetime.now(timezone.utc)
+            self._retraining_finished_at = None
+            self._retraining_error = None
+
+        try:
+            _print("=== Retraining started ===")
+
+            # ── 1. Load existing data from disk ────────────────────────────
+            raw_path = self.cfg["data"]["raw_path"] if self.cfg else None
+            if not raw_path:
+                self.cfg = self._load_config()
+                raw_path = self.cfg["data"]["raw_path"]
+
+            students_df = pd.read_csv(f"{raw_path}/students.csv")
+            scholarships_df = pd.read_csv(f"{raw_path}/scholarships.csv")
+            feedbacks_df = pd.read_csv(f"{raw_path}/feedback.csv")
+
+            # ── Normalize existing data to ensure consistent JSON types ────
+            students_df = _normalize_json_columns(students_df, _STUDENT_JSON_COLS)
+            scholarships_df = _normalize_json_columns(scholarships_df, _SCHOLARSHIP_JSON_COLS)
+
+            # ── 2. Merge with new data from request ────────────────────────
+            if students_csv_text:
+                new_students = _parse_csv_with_json(
+                    students_csv_text, _STUDENT_JSON_COLS
+                )
+                students_df = self._merge_csvs(students_df, new_students, "student_id")
+
+            if scholarships_csv_text:
+                new_scholarships = _parse_csv_with_json(
+                    scholarships_csv_text, _SCHOLARSHIP_JSON_COLS
+                )
+                scholarships_df = self._merge_csvs(
+                    scholarships_df, new_scholarships, "scholarship_id"
+                )
+
+            if feedbacks_csv_text:
+                new_feedbacks = _parse_csv_with_json(
+                    feedbacks_csv_text, []  # feedbacks don't have JSON columns in standard format
+                )
+                id_col = "feedback_id" if "feedback_id" in new_feedbacks.columns else "timestamp"
+                feedbacks_df = self._merge_csvs(feedbacks_df, new_feedbacks, id_col)
+
+            _print(
+                f"  Data: {len(students_df)} students, {len(scholarships_df)} scholarships, {len(feedbacks_df)} feedbacks"
+            )
+
+            # ── 3. Precompute text embeddings ─────────────────────────────
+            stu_text_emb, sch_text_emb = self._precompute_text_embeddings(
+                students_df, scholarships_df
+            )
+
+            # ── 4. Build structured features for all data ──────────────────
+            _print("  Building structured features...")
+            stu_struct = np.array(
+                [encode_student(r) for _, r in students_df.iterrows()], dtype=np.float32
+            )
+            sch_struct = np.array(
+                [encode_scholarship(r) for _, r in scholarships_df.iterrows()], dtype=np.float32
+            )
+
+            # ── 5. Save merged data back to disk ───────────────────────────
+            pd.DataFrame(students_df).to_csv(f"{raw_path}/students.csv", index=False)
+            pd.DataFrame(scholarships_df).to_csv(f"{raw_path}/scholarships.csv", index=False)
+            pd.DataFrame(feedbacks_df).to_csv(f"{raw_path}/feedback.csv", index=False)
+
+            # ── 6. Train model (finetuning from existing weights) ──────────
+            cfg = self.cfg if self.cfg else self._load_config()
+
+            # Build indices mapping each feedback row to its position in the full arrays
+            stu_id_map = {sid: i for i, sid in enumerate(students_df["student_id"])}
+            sch_id_map = {sid: i for i, sid in enumerate(scholarships_df["scholarship_id"])}
+
+            stu_indices = np.array(
+                [stu_id_map[sid] for sid in feedbacks_df["student_id"]], dtype=np.int32
+            )
+            sch_indices = np.array(
+                [sch_id_map[sid] for sid in feedbacks_df["scholarship_id"]], dtype=np.int32
+            )
+
+            self._train_model(
+                stu_struct, sch_struct, stu_text_emb, sch_text_emb,
+                feedbacks_df, cfg, stu_indices, sch_indices
+            )
+
+            # ── 7. Export updated embeddings ───────────────────────────────
+            self._export_embeddings(scholarships_df)
+
+            # ── 8. Update status → done ────────────────────────────────────
+            with self._retraining_lock:
+                self._retraining_status = "done"
+                self._retraining_finished_at = datetime.now(timezone.utc)
+
+            _print("=== Retraining completed ===\n")
+            return {"status": "done"}
+
+        except Exception as e:
+            with self._retraining_lock:
+                self._retraining_status = "error"
+                self._retraining_error = str(e)
+            print(f"\n=== Retraining FAILED: {e} ===\n", file=sys.stderr, flush=True)
+            return {"status": "error", "error": str(e)}
 
     # ── Public API ────────────────────────────────────────────────────────
 
-    def recommend(
-        self, student_data: dict, k: int = 5
-    ) -> list[dict]:
+    def recommend(self, student_data: dict, k: int = 5) -> list[dict]:
         """Return top-K scholarships for a student profile.
 
         Args:
-            student_data: Student profile dict matching CSV columns
+            student_data: Student profile dict matching CSV schema
                 (nationality, age, high_school_track, etc.)
             k: Number of scholarships to return (default 5)
 
@@ -215,17 +533,7 @@ class InferenceEngine:
         scholarships_df = pd.read_csv(f"{raw_path}/scholarships.csv")
 
         # Parse JSON columns (language_requirements, selection_criteria)
-        # Use json.loads instead of eval() to handle JSON booleans (true/false) properly
-        for col in ["language_requirements", "selection_criteria"]:
-            if col in scholarships_df.columns:
-                def parse_json(val):
-                    if isinstance(val, str) and val.strip().startswith(("[", "{")):
-                        try:
-                            return json.loads(val)
-                        except (json.JSONDecodeError, ValueError):
-                            return val
-                    return val
-                scholarships_df[col] = scholarships_df[col].apply(parse_json)
+        scholarships_df = _normalize_json_columns(scholarships_df, _SCHOLARSHIP_JSON_COLS)
 
         # Encode each scholarship on-the-fly
         sch_struct_list = []
@@ -276,20 +584,8 @@ class InferenceEngine:
         Args:
             csv_text: Raw CSV text content to parse.
         """
-        # Parse CSV from string
-        scholarships_df = pd.read_csv(pd.io.common.StringIO(csv_text))
-
-        # Parse JSON columns (language_requirements, selection_criteria)
-        for col in ["language_requirements", "selection_criteria"]:
-            if col in scholarships_df.columns:
-                def parse_json(val):
-                    if isinstance(val, str) and val.strip().startswith(("[", "{")):
-                        try:
-                            return json.loads(val)
-                        except (json.JSONDecodeError, ValueError):
-                            return val
-                    return val
-                scholarships_df[col] = scholarships_df[col].apply(parse_json)
+        # Parse CSV from string using shared parser
+        scholarships_df = _parse_csv_with_json(csv_text, _SCHOLARSHIP_JSON_COLS)
 
         # Encode each scholarship on-the-fly
         sch_struct_list = []
@@ -376,6 +672,31 @@ class InferenceEngine:
         print(f"Added {len(new_scholarships)} scholarships. Total: {len(self._sch_ids)}")
         return len(new_scholarships)
 
+    def initialize(self):
+        """Load both towers and build initial scholarship embedding cache."""
+        self.cfg = self._load_config()
+
+        custom = {"L2Normalize": L2Normalize}
+
+        # Load student tower — used for encoding students at inference time
+        self.student_tower = tf.keras.models.load_model(
+            self.student_tower_path, custom_objects=custom
+        )
+        print(f"Loaded student tower from {self.student_tower_path}")
+
+        # Load scholarship tower — used for encoding scholarships into the cache
+        self.scholarship_tower = tf.keras.models.load_model(
+            self.scholarship_tower_path, custom_objects=custom
+        )
+        print(f"Loaded scholarship tower from {self.scholarship_tower_path}")
+
+        # Warm-up SBERT model (lazy-loaded singleton in feature_engineering)
+        get_sbert_model()
+        print("SBERT model warmed up")
+
+        # Build initial scholarship cache — always recompute on-the-fly
+        self.refresh_scholarships()
+
     # ── Private helpers ───────────────────────────────────────────────────
 
     def _build_student_text(self, student_data: dict) -> str:
@@ -395,25 +716,3 @@ class InferenceEngine:
         scores = self._sch_emb @ stu_emb
         return scores
 
-
-def _build_scholarship_metadata(df) -> list[dict]:
-    """Extract lightweight metadata from scholarship DataFrame for API responses."""
-    metadata = []
-    for _, row in df.iterrows():
-        metadata.append({
-            "scholarship_id": row.get("scholarship_id"),
-            "host_country": row.get("host_country"),
-            "host_region": row.get("host_region"),
-            "funding_is_full_funding": bool(row.get("funding_is_full_funding", False)),
-        })
-    return metadata
-
-
-def _scholarship_to_metadata(sch: dict) -> dict:
-    """Convert scholarship dict to lightweight metadata for API responses."""
-    return {
-        "scholarship_id": sch.get("scholarship_id"),
-        "host_country": sch.get("host_country"),
-        "host_region": sch.get("host_region"),
-        "funding_is_full_funding": bool(sch.get("funding_is_full_funding", False)),
-    }

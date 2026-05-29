@@ -67,14 +67,14 @@ Student Tower                     Scholarship Tower
 
 ```bash
 # Pastikan python di sini adalah Python sistem (bukan conda base). Minimal versi 3.11
-python -m venv venv
+python -m venv venv # or uv venv venv -p 3.11
 
 # Windows
 .\venv\Scripts\Activate.ps1
 # Mac/Linux
 source venv/bin/activate
 
-pip install -r requirements.txt # or use yusr-requirements.txt if encounter segfaults error on serve
+pip install -r requirements.txt # or use yusr-requirements.txt for CPU only compute
 pip install -e .
 
 # Optional, if Tensorboard failing to launch
