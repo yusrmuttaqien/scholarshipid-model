@@ -10,3 +10,10 @@ server:
   cors_origins: "*"  # Local: allow all. Production: restrict to specific domains (e.g., "https://scholarship.id")
   auth_required: false  # Local: false. Production: true to enable Bearer token auth on /refresh
   auth_token: ""  # Set this to a secret token for production auth
+
+# Retraining configuration (used by /retrain endpoint)
+# Splits are applied chronologically to merged feedback data (sorted by timestamp).
+# The remaining portion after train+val is discarded (similar to test split in training).
+retraining:
+  train_split: 0.70
+  val_split: 0.15

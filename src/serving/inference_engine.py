@@ -156,7 +156,8 @@ class InferenceEngine:
     ) -> dict:
         """Train the model on merged data using existing weights (finetuning).
 
-        Splits feedback into train (80%) / val (20%) by timestamp.
+        Splits feedback chronologically by timestamp into train/val sets
+        using splits configured in serving.yaml under `retraining`.
         Returns metrics dict with final training results.
         """
         feedback_weights = cfg["feedback_weights"]
@@ -171,10 +172,13 @@ class InferenceEngine:
         # Sort feedback by timestamp for time-based split
         feedback_df = feedback_df.sort_values("timestamp").reset_index(drop=True)
         n_total = len(feedback_df)
-        n_train = int(0.8 * n_total)
+        train_split = self.serving_config.retrain_train_split
+        val_split = self.serving_config.retrain_val_split
+        n_train = int(train_split * n_total)
+        n_val = int(val_split * n_total)
 
         train_df = feedback_df.iloc[:n_train]
-        val_df = feedback_df.iloc[n_train:]
+        val_df = feedback_df.iloc[n_train : n_train + n_val]
 
         _print(f"  Feedback split — train:{len(train_df)}  val:{len(val_df)}")
 

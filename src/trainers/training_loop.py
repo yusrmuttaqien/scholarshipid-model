@@ -12,6 +12,33 @@ import tensorflow as tf
 from src.trainers.trainer import BestModelCallback, sampled_softmax_loss_weighted
 
 
+def _batch_iterator(
+    stu_feat: np.ndarray,
+    sch_feat: np.ndarray,
+    weights: np.ndarray,
+    batch_size: int = 256,
+) -> list[tuple[np.ndarray, np.ndarray, np.ndarray]]:
+    """Yield mini-batches from numpy arrays.
+
+    Args:
+        stu_feat: (N, D_stu) student features.
+        sch_feat: (N, D_sch) scholarship features.
+        weights: (N,) per-sample feedback weights.
+        batch_size: Mini-batch size.
+
+    Yields:
+        (stu_batch, sch_batch, weight_batch) triples.
+    """
+    n = len(stu_feat)
+    indices = np.arange(n)
+    batches = []
+    for start in range(0, n, batch_size):
+        end = min(start + batch_size, n)
+        idx = indices[start:end]
+        batches.append((stu_feat[idx], sch_feat[idx], weights[idx]))
+    return batches
+
+
 def run_training(
     student_tower: tf.keras.Model,
     scholarship_tower: tf.keras.Model,
@@ -28,6 +55,7 @@ def run_training(
     log_dir: str,
     tb_enabled: bool = False,
     k: int = 5,
+    batch_size: int = 256,
     # ── Validation metrics (optional, for full Recall/NDCG/MRR) ───────
     val_df: Optional[object] = None,
     stu_struct: Optional[np.ndarray] = None,
@@ -50,6 +78,7 @@ def run_training(
         log_dir: TensorBoard log directory.
         tb_enabled: Whether to write TensorBoard summaries.
         k: Recall@K value for validation metrics.
+        batch_size: Mini-batch size for training (default 256).
         val_df: (optional) Validation DataFrame for Evaluator.compute_metrics().
                 If provided, full Recall/NDCG/MRR metrics are computed each epoch.
         stu_struct / sch_struct: Structured feature arrays.
@@ -78,33 +107,48 @@ def run_training(
     from src.evaluators import Evaluator
     evaluator = Evaluator(k=k)
 
+    # ── Pre-compute validation embeddings (once per epoch) ────────────────
+    val_stu_emb_all = student_tower(val_stu_feat, training=False).numpy()
+    val_sch_emb_all = scholarship_tower(val_sch_feat, training=False).numpy()
+
     # ── Training loop ────────────────────────────────────────────────────────
     cb.on_train_begin()
     metrics_history = {}
+
     for epoch in range(1, epochs + 1):
-        # Train step
-        with tf.GradientTape() as tape:
-            stu_emb = student_tower(train_stu_feat, training=True)
-            sch_emb = scholarship_tower(train_sch_feat, training=True)
-            train_loss = sampled_softmax_loss_weighted(stu_emb, sch_emb, train_weights, temperature)
+        # Train step — iterate over mini-batches
+        train_losses = []
+        for stu_b, sch_b, w_b in _batch_iterator(train_stu_feat, train_sch_feat, train_weights, batch_size):
+            with tf.GradientTape() as tape:
+                stu_emb = student_tower(stu_b, training=True)
+                sch_emb = scholarship_tower(sch_b, training=True)
+                train_loss = sampled_softmax_loss_weighted(stu_emb, sch_emb, w_b, temperature)
 
-        all_vars = (student_tower.trainable_variables +
-                    scholarship_tower.trainable_variables)
-        grads = tape.gradient(train_loss, all_vars)
-        optimizer.apply_gradients(zip(grads, all_vars))
+            all_vars = (student_tower.trainable_variables +
+                        scholarship_tower.trainable_variables)
+            grads = tape.gradient(train_loss, all_vars)
+            optimizer.apply_gradients(zip(grads, all_vars))
+            train_losses.append(float(train_loss))
 
-        # Validation step (no gradient computation needed, but keep tape for consistency)
-        with tf.GradientTape(watch_accessed_variables=False) as tape:
-            val_stu_emb = student_tower(val_stu_feat, training=False)
-            val_sch_emb = scholarship_tower(val_sch_feat, training=False)
-            val_loss = sampled_softmax_loss_weighted(
-                val_stu_emb, val_sch_emb, val_weights, temperature
-            )
+        train_loss_mean = float(np.mean(train_losses))
+
+        # Validation loss (batched)
+        val_losses = []
+        for stu_b, sch_b, w_b in _batch_iterator(val_stu_feat, val_sch_feat, val_weights, batch_size):
+            with tf.GradientTape(watch_accessed_variables=False):
+                val_stu_emb = student_tower(stu_b, training=False)
+                val_sch_emb = scholarship_tower(sch_b, training=False)
+                val_loss = sampled_softmax_loss_weighted(
+                    val_stu_emb, val_sch_emb, w_b, temperature
+                )
+            val_losses.append(float(val_loss))
+
+        val_loss_mean = float(np.mean(val_losses))
 
         # Build logs dict — include retrieval metrics if evaluator data provided
         logs = {
-            "train_loss": float(train_loss),
-            "val_loss": float(val_loss),
+            "train_loss": train_loss_mean,
+            "val_loss": val_loss_mean,
         }
         if val_df is not None and stu_struct is not None:
             eval_metrics = evaluator.compute_metrics(
@@ -125,8 +169,8 @@ def run_training(
         # TensorBoard logging
         if tb_enabled and summary_writer is not None:
             with summary_writer.as_default():
-                tf.summary.scalar("loss/train_loss", train_loss, step=epoch)
-                tf.summary.scalar("loss/val_loss", val_loss, step=epoch)
+                tf.summary.scalar("loss/train_loss", train_loss_mean, step=epoch)
+                tf.summary.scalar("loss/val_loss", val_loss_mean, step=epoch)
                 for mk, mv in logs.items():
                     if mk not in ("train_loss", "val_loss"):
                         tf.summary.scalar(f"{mk}", mv, step=epoch)
@@ -135,14 +179,14 @@ def run_training(
         if val_df is not None:
             print(
                 f"    Epoch {epoch}/{epochs} | "
-                f"train_loss={train_loss:.4f}  val_loss={val_loss:.4f} | "
+                f"train_loss={train_loss_mean:.4f}  val_loss={val_loss_mean:.4f} | "
                 f"Recall@{k}={logs.get(f'recall@{k}', 0):.4f}  "
                 f"NDCG@{k}={logs.get(f'ndcg@{k}', 0):.4f}  "
                 f"MRR={logs.get('mrr', 0):.4f}"
             )
         else:
             print(
-                f"    Epoch {epoch}/{epochs} — train_loss={train_loss:.4f}  val_loss={val_loss:.4f}"
+                f"    Epoch {epoch}/{epochs} — train_loss={train_loss_mean:.4f}  val_loss={val_loss_mean:.4f}"
             )
 
         metrics_history[epoch] = dict(logs)
