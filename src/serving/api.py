@@ -2,7 +2,7 @@
 
 Endpoints:
     POST /recommend  — Recommend top-K scholarships for a student profile
-    POST /refresh    — Refresh scholarship cache (admin)
+    POST /refresh    — Rebuild scholarship embedding cache from CSV (admin)
     POST /retrain    — Retrain model with new data (async, admin)
     GET  /health     — Health check (includes retraining status)
 """
@@ -12,7 +12,7 @@ import threading
 from http import HTTPStatus
 from typing import Optional
 
-from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, UploadFile
+from fastapi import Depends, FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field
@@ -204,8 +204,25 @@ class RecommendationResponse(BaseModel):
 
 class RefreshResponse(BaseModel):
     """Response for /refresh endpoint."""
-    status: str
-    total_scholarships: int
+    status: str = Field(
+        description="Operation status",
+        examples=["refreshed"],
+    )
+    total_scholarships: int = Field(
+        description="Total number of scholarships in cache after refresh",
+        examples=[150],
+    )
+
+
+class HealthResponse(BaseModel):
+    """Response for /health endpoint."""
+    status: str = Field(description="Service health status")
+    student_tower_loaded: bool = Field(description="Whether student tower model is loaded")
+    scholarship_tower_loaded: bool = Field(description="Whether scholarship tower model is loaded")
+    cached_scholarships: int = Field(description="Number of scholarships in cache")
+    retraining: RetrainingInfo = Field(
+        description="Current retraining job status and metadata",
+    )
 
 
 class RetrainStartResponse(BaseModel):
@@ -279,17 +296,17 @@ def create_app(engine: InferenceEngine) -> FastAPI:
     @app.post("/refresh", response_model=RefreshResponse)
     async def refresh(
         auth_token: Optional[str] = Depends(_get_auth_token),
-        csv_file: UploadFile = File(...),
+        scholarships: UploadFile = File(..., description="Scholarship data CSV file"),
     ):
         """Rebuild the scholarship embedding cache from an uploaded CSV file.
 
-        Call this endpoint after new scholarships are added to the data source.
-        Requires admin authentication when auth_required is enabled.
+        Call this endpoint after adding new scholarships to the data source.
+        The model will use updated embeddings on the next /recommend call.
 
-        A CSV file must be attached in the request body (multipart/form-data).
+        Requires admin authentication when auth_required is enabled.
         """
         # Validate file extension
-        if not csv_file.filename or not csv_file.filename.lower().endswith(".csv"):
+        if not scholarships.filename or not scholarships.filename.lower().endswith(".csv"):
             raise HTTPException(
                 status_code=422,
                 detail="Only .csv files are allowed",
@@ -304,7 +321,7 @@ def create_app(engine: InferenceEngine) -> FastAPI:
                 )
 
         try:
-            content = await csv_file.read()
+            content = await scholarships.read()
             engine.refresh_from_csv(content.decode("utf-8"))
         except Exception as exc:
             raise HTTPException(status_code=500, detail=str(exc))
@@ -379,22 +396,17 @@ def create_app(engine: InferenceEngine) -> FastAPI:
             message="Retraining initiated. Check /health for status.",
         )
 
-    @app.get("/health")
+    @app.get("/health", response_model=HealthResponse)
     async def health():
         """Health check — returns model loading status and retraining info."""
-        retrain_info = {
-            "status": engine._retraining_status,
-            "started_at": engine._retraining_started_at.isoformat() if engine._retraining_started_at else None,
-            "finished_at": engine._retraining_finished_at.isoformat() if engine._retraining_finished_at else None,
-            "error": engine._retraining_error,
-        }
+        retrain_info = engine.get_retraining_status()
 
-        return {
-            "status": "healthy",
-            "student_tower_loaded": engine.student_tower is not None,
-            "scholarship_tower_loaded": engine.scholarship_tower is not None,
-            "cached_scholarships": len(engine._sch_ids),
-            "retraining": retrain_info,
-        }
+        return HealthResponse(
+            status="healthy",
+            student_tower_loaded=engine.student_tower is not None,
+            scholarship_tower_loaded=engine.scholarship_tower is not None,
+            cached_scholarships=len(engine._sch_ids),
+            retraining=retrain_info,
+        )
 
     return app
