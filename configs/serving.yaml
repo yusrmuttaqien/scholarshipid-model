@@ -12,8 +12,8 @@ server:
   auth_token: ""  # Set this to a secret token for production auth
 
 # Retraining configuration (used by /retrain endpoint)
-# Splits are applied chronologically to merged feedback data (sorted by timestamp).
-# The remaining portion after train+val is discarded (similar to test split in training).
+# By default, all feedback data is used for training (no chronological split).
+# This ensures new/delta entries uploaded via /retrain are seen by the optimizer.
+# Optional holdout_fraction can reserve a percentage of recent data for monitoring only.
 retraining:
-  train_split: 0.70
-  val_split: 0.15
+  holdout_fraction: 0.0   # 0.0 = use all data for training, 0.20 = hold out last 20%

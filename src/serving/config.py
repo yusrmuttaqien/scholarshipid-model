@@ -34,7 +34,6 @@ class ServingConfig:
         self.auth_required: bool = cfg["server"].get("auth_required", False)
         self.auth_token: str = cfg["server"].get("auth_token", "")
 
-        # Retraining splits (loaded from retraining section in serving.yaml)
+        # Retraining config (loaded from retraining section in serving.yaml)
         rt_cfg = cfg.get("retraining", {})
-        self.retrain_train_split: float = rt_cfg.get("train_split", 0.70)
-        self.retrain_val_split: float = rt_cfg.get("val_split", 0.15)
+        self.retrain_holdout_fraction: float = rt_cfg.get("holdout_fraction", 0.0)

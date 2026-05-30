@@ -156,8 +156,10 @@ class InferenceEngine:
     ) -> dict:
         """Train the model on merged data using existing weights (finetuning).
 
-        Splits feedback chronologically by timestamp into train/val sets
-        using splits configured in serving.yaml under `retraining`.
+        By default uses ALL feedback for training (no chronological split),
+        ensuring new/delta entries uploaded via /retrain are seen by the optimizer.
+        An optional holdout_fraction can reserve recent data for monitoring only.
+
         Returns metrics dict with final training results.
         """
         feedback_weights = cfg["feedback_weights"]
@@ -169,32 +171,46 @@ class InferenceEngine:
         stu_feat_all = np.concatenate([stu_struct, stu_text_emb], axis=1)  # (N_stu, 506)
         sch_feat_all = np.concatenate([sch_struct, sch_text_emb], axis=1)  # (N_sch, 509)
 
-        # Sort feedback by timestamp for time-based split
+        # Sort feedback by timestamp for consistent ordering
         feedback_df = feedback_df.sort_values("timestamp").reset_index(drop=True)
         n_total = len(feedback_df)
-        train_split = self.serving_config.retrain_train_split
-        val_split = self.serving_config.retrain_val_split
-        n_train = int(train_split * n_total)
-        n_val = int(val_split * n_total)
 
-        train_df = feedback_df.iloc[:n_train]
-        val_df = feedback_df.iloc[n_train : n_train + n_val]
-
-        _print(f"  Feedback split — train:{len(train_df)}  val:{len(val_df)}")
+        # ── Optional holdout split ────────────────────────────────────────
+        holdout_frac = self.serving_config.retrain_holdout_fraction
+        if holdout_frac > 0:
+            n_holdout = int(holdout_frac * n_total)
+            train_df = feedback_df.iloc[:n_total - n_holdout]
+            val_df = feedback_df.iloc[n_total - n_holdout:]
+            _print(f"  Feedback split — train:{len(train_df)}  holdout:{len(val_df)}")
+        else:
+            train_df = feedback_df
+            val_df = feedback_df
+            _print(f"  Using all {n_total} feedback samples for training (no holdout)")
 
         # Build per-sample features from feedback rows
         weights_all = np.array(
             [feedback_weights[ft] for ft in feedback_df["feedback_type"]], dtype=np.float32
         )
-        train_weights = weights_all[:n_train]
-        val_weights = weights_all[n_train:]
 
         stu_feat_all_fb = stu_feat_all[stu_indices]  # (M, 506) where M = len(feedback_df)
         sch_feat_all_fb = sch_feat_all[sch_indices]  # (M, 509)
-        train_stu_feat = stu_feat_all_fb[:n_train]
-        val_stu_feat = stu_feat_all_fb[n_train:]
-        train_sch_feat = sch_feat_all_fb[:n_train]
-        val_sch_feat = sch_feat_all_fb[n_train:]
+
+        if holdout_frac > 0:
+            n_train = len(train_df)
+            train_weights = weights_all[:n_train]
+            val_weights = weights_all[n_train:]
+            train_stu_feat = stu_feat_all_fb[:n_train]
+            val_stu_feat = stu_feat_all_fb[n_train:]
+            train_sch_feat = sch_feat_all_fb[:n_train]
+            val_sch_feat = sch_feat_all_fb[n_train:]
+        else:
+            # No holdout — use all data for both training and evaluation
+            train_weights = weights_all
+            val_weights = weights_all
+            train_stu_feat = stu_feat_all_fb
+            val_stu_feat = stu_feat_all_fb
+            train_sch_feat = sch_feat_all_fb
+            val_sch_feat = sch_feat_all_fb
 
         # ── Build optimizer (reuse loaded towers) ────────────────────────
         student_tower = self.student_tower
@@ -524,6 +540,16 @@ class InferenceEngine:
         """Normalize JSON columns in a DataFrame using the shared function."""
         from src.utils.feature_engineering import normalize_json_columns as _normalize_json_columns
         return _normalize_json_columns(df, json_cols)
+
+    def get_retraining_status(self) -> dict:
+        """Return current retraining status (for /health endpoint)."""
+        with self._retraining_lock:
+            return {
+                "status": self._retraining_status,
+                "started_at": self._retraining_started_at.isoformat() if self._retraining_started_at else None,
+                "finished_at": self._retraining_finished_at.isoformat() if self._retraining_finished_at else None,
+                "error": self._retraining_error,
+            }
 
     def _refresh_from_df(self, scholarships_df: pd.DataFrame) -> None:
         """Build scholarship embedding cache from a DataFrame.
