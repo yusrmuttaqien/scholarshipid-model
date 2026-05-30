@@ -9,6 +9,7 @@ Imports from sibling modules:
 - config: _print, ServingConfig, STUDENT_JSON_COLS, SCHOLARSHIP_JSON_COLS
 - helpers: student_profile_to_csv_schema, _parse_csv_with_json, etc.
 """
+import os
 import sys
 import threading
 from datetime import datetime, timezone
@@ -251,10 +252,6 @@ class InferenceEngine:
         _print(f"  Saved updated weights to {cfg['output']['checkpoint_dir']}")
         return metrics
 
-    def _export_embeddings(self, scholarships_df: pd.DataFrame) -> None:
-        """Export scholarship embeddings after training."""
-        self._refresh_from_df(scholarships_df)
-
     def retrain_from_csvs(
         self,
         students_csv_text: Optional[str] = None,
@@ -361,8 +358,35 @@ class InferenceEngine:
                 sch_ids=sch_ids,
             )
 
-            # ── 7. Export updated embeddings ───────────────────────────────
-            self._export_embeddings(scholarships_df)
+            # ── 7. Refresh in-memory cache + export to disk ────────────────
+            self._refresh_from_df(scholarships_df)
+            output_dir = self.cfg["output"]["embedding_dir"]
+            os.makedirs(output_dir, exist_ok=True)
+
+            sch_struct_list = []
+            for _, row in scholarships_df.iterrows():
+                sch_dict = row.to_dict()
+                sch_struct_list.append(encode_scholarship(sch_dict))
+            sch_struct = np.array(sch_struct_list, dtype=np.float32)
+
+            sch_text_list = []
+            for _, row in scholarships_df.iterrows():
+                sch_dict = row.to_dict()
+                text_parts = []
+                for field in ["mission_statement", "target_recipient_profile"]:
+                    val = sch_dict.get(field, "")
+                    if val:
+                        text_parts.append(str(val))
+                sch_text_list.append(" ".join(text_parts) if text_parts else "")
+
+            sch_text_emb_all = encode_text(sch_text_list)
+            sch_feat = np.concatenate([sch_struct, sch_text_emb_all], axis=1)
+            sch_emb = self.scholarship_tower(sch_feat, training=False).numpy()
+
+            sch_ids = scholarships_df["scholarship_id"].tolist()
+            np.save(os.path.join(output_dir, "scholarship_emb.npy"), sch_emb)
+            np.save(os.path.join(output_dir, "scholarship_ids.npy"), np.array(sch_ids, dtype=object))
+            _print(f"  Saved scholarship embeddings to {output_dir}/")
 
             # ── 8. Update status → done ────────────────────────────────────
             with self._retraining_lock:
@@ -509,8 +533,44 @@ class InferenceEngine:
         print(f"Added {len(new_scholarships)} scholarships. Total: {len(self._sch_ids)}")
         return len(new_scholarships)
 
+    def _load_cached_embeddings(self) -> bool:
+        """Try to load pre-computed scholarship embeddings from disk.
+
+        Returns True if embeddings were loaded successfully, False otherwise.
+        When successful, sets _sch_emb, _sch_ids, and _sch_metadata directly.
+        """
+        emb_dir = self.cfg["output"]["embedding_dir"]
+        sch_emb_path = os.path.join(emb_dir, "scholarship_emb.npy")
+        sch_ids_path = os.path.join(emb_dir, "scholarship_ids.npy")
+
+        if not (os.path.exists(sch_emb_path) and os.path.exists(sch_ids_path)):
+            _print("  No cached embeddings found — will recompute from CSVs.")
+            return False
+
+        try:
+            self._sch_emb = np.load(sch_emb_path, allow_pickle=False)
+            self._sch_ids = list(np.load(sch_ids_path, allow_pickle=True).tolist())
+            self._sch_metadata = []  # Will be built lazily from CSV if needed
+
+            # Build metadata from the saved IDs (minimal — just enough for API)
+            self._sch_metadata = [{"scholarship_id": sid} for sid in self._sch_ids]
+
+            _print(f"Loaded cached embeddings: {len(self._sch_emb)} scholarships "
+                   f"(shape {self._sch_emb.shape})")
+            return True
+        except Exception as e:
+            print(f"  Failed to load cached embeddings: {e}", file=sys.stderr, flush=True)
+            return False
+
     def initialize(self):
-        """Load both towers and build initial scholarship embedding cache."""
+        """Load both towers and build initial scholarship embedding cache.
+
+        Strategy:
+        1. Load model weights from disk (always required)
+        2. Try loading pre-computed scholarship embeddings from disk
+           (skips SBERT + tower inference — much faster cold start)
+        3. Fall back to recomputing from CSVs if cached embeddings unavailable
+        """
         self.cfg = self._load_config()
 
         custom = {"L2Normalize": L2Normalize}
@@ -527,11 +587,14 @@ class InferenceEngine:
         )
         print(f"Loaded scholarship tower from {self.scholarship_tower_path}")
 
-        # Warm-up SBERT model (lazy-loaded singleton in feature_engineering)
+        # Try loading pre-computed embeddings (fast path — skips SBERT + tower)
+        if self._load_cached_embeddings():
+            print("Scholarship cache loaded from disk ✅")
+            return  # Done — no need for SBERT warmup or recomputation
+
+        # Fallback: recompute from CSVs (slower, but always works)
         get_sbert_model()
         print("SBERT model warmed up")
-
-        # Build initial scholarship cache — always recompute on-the-fly
         self.refresh_scholarships()
 
     # ── Private helpers ───────────────────────────────────────────────────
@@ -554,8 +617,7 @@ class InferenceEngine:
     def _refresh_from_df(self, scholarships_df: pd.DataFrame) -> None:
         """Build scholarship embedding cache from a DataFrame.
 
-        Shared logic used by refresh_scholarships(), refresh_from_csv(), and
-        _export_embeddings().
+        Shared logic used by refresh_scholarships() and refresh_from_csv().
         """
         # Encode each scholarship on-the-fly
         sch_struct_list = []
