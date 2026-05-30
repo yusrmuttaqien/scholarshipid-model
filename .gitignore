@@ -20,6 +20,7 @@ data/features/*
 
 # Outputs — checkpoints & embeddings besar, jangan commit
 outputs/checkpoints/*
+outputs/logs/*
 outputs/embeddings/*
 !outputs/**/.gitkeep
 

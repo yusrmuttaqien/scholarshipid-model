@@ -112,6 +112,7 @@ def main():
         sch_text_emb=sch_text_emb,
         stu_id_to_idx=stu_id_to_idx,
         sch_ids=sch_ids,
+        seed=cfg["experiment"]["seed"],
     )
 
     print(f"Checkpoints: {cfg['output']['checkpoint_dir']}")
