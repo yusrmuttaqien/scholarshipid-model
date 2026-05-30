@@ -18,6 +18,7 @@ def _batch_iterator(
     weights: np.ndarray,
     batch_size: int = 256,
     shuffle: bool = False,
+    seed: Optional[int] = None,
 ) -> list[tuple[np.ndarray, np.ndarray, np.ndarray]]:
     """Yield mini-batches from numpy arrays.
 
@@ -27,6 +28,7 @@ def _batch_iterator(
         weights: (N,) per-sample feedback weights.
         batch_size: Mini-batch size.
         shuffle: If True, randomly permute indices before batching.
+        seed: Optional RNG seed for reproducible shuffling.
 
     Yields:
         (stu_batch, sch_batch, weight_batch) triples.
@@ -34,7 +36,7 @@ def _batch_iterator(
     n = len(stu_feat)
     indices = np.arange(n)
     if shuffle:
-        np.random.shuffle(indices)
+        np.random.default_rng(seed).shuffle(indices)
     batches = []
     for start in range(0, n, batch_size):
         end = min(start + batch_size, n)
@@ -60,6 +62,7 @@ def run_training(
     tb_enabled: bool = False,
     k: int = 5,
     batch_size: int = 256,
+    seed: Optional[int] = None,
     # ── Validation metrics (optional, for full Recall/NDCG/MRR) ───────
     val_df: Optional[object] = None,
     stu_struct: Optional[np.ndarray] = None,
@@ -122,7 +125,7 @@ def run_training(
     for epoch in range(1, epochs + 1):
         # Train step — shuffle indices each epoch to prevent temporal ordering bias
         train_losses = []
-        for stu_b, sch_b, w_b in _batch_iterator(train_stu_feat, train_sch_feat, train_weights, batch_size, shuffle=True):
+        for stu_b, sch_b, w_b in _batch_iterator(train_stu_feat, train_sch_feat, train_weights, batch_size, shuffle=True, seed=None if seed is None else seed + epoch):
             with tf.GradientTape() as tape:
                 stu_emb = student_tower(stu_b, training=True)
                 sch_emb = scholarship_tower(sch_b, training=True)
