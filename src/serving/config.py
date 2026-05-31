@@ -28,8 +28,15 @@ class ServingConfig:
         self.student_tower_path: str = cfg["models"]["student_tower"]
         self.scholarship_tower_path: str = cfg["models"]["scholarship_tower"]
 
-        self.server_host: str = cfg["server"]["host"]
-        self.server_port: int = cfg["server"]["port"]
+        # Allow env var override (e.g., HF Spaces sets SERVER_PORT=7860)
+        import os
+        server_port_env = os.environ.get("SERVER_PORT")
+        if server_port_env is not None:
+            self.server_host: str = "0.0.0.0"
+            self.server_port: int = int(server_port_env)
+        else:
+            self.server_host: str = cfg["server"]["host"]
+            self.server_port: int = cfg["server"]["port"]
         self.cors_origins: str = cfg["server"]["cors_origins"]
         self.auth_required: bool = cfg["server"].get("auth_required", False)
         self.auth_token: str = cfg["server"].get("auth_token", "")

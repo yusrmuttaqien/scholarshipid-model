@@ -10,10 +10,12 @@ After successful retraining, data + model artifacts are pushed to HuggingFace.
 """
 from __future__ import annotations
 
+import io
 import threading
 from http import HTTPStatus
 from typing import Optional
 
+import pandas as pd
 from fastapi import Depends, FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -306,6 +308,8 @@ def create_app(engine: InferenceEngine) -> FastAPI:
         Call this endpoint after adding new scholarships to the data source.
         The model will use updated embeddings on the next /recommend call.
 
+        New scholarships are merged into existing ones by scholarship_id (new replaces old).
+
         Requires admin authentication when auth_required is enabled.
         """
         # Validate file extension
@@ -325,7 +329,20 @@ def create_app(engine: InferenceEngine) -> FastAPI:
 
         try:
             content = await scholarships.read()
-            engine.refresh_from_csv(content.decode("utf-8"))
+            csv_text = content.decode("utf-8")
+
+            # Incrementally merge new scholarships with existing ones (new replaces old by ID)
+            cfg = engine.cfg if engine.cfg else engine._load_config()
+            raw_path = cfg["data"]["raw_path"]
+            existing_df = pd.read_csv(f"{raw_path}/scholarships.csv")
+            new_df = pd.read_csv(io.StringIO(csv_text))
+            merged_df = pd.concat([existing_df, new_df]).drop_duplicates(
+                subset=["scholarship_id"], keep="last"
+            )
+            merged_df.to_csv(f"{raw_path}/scholarships.csv", index=False)
+
+            # Rebuild in-memory embedding cache from the merged CSV on disk
+            engine.refresh_from_csv(merged_df.to_csv(index=False))
         except Exception as exc:
             raise HTTPException(status_code=500, detail=str(exc))
 

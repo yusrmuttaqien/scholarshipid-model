@@ -47,7 +47,7 @@ models:
 # Server configuration (used by /refresh and /retrain endpoints)
 server:
   host: 0.0.0.0
-  port: 8000
+  port: 7860
   cors_origins: "*"  # Local: allow all. Production: restrict to specific domains (e.g., "https://scholarship.id")
   auth_required: false  # Local: false. Production: true to enable Bearer token auth on /refresh
   auth_token: ""  # Set this to a secret token for production auth

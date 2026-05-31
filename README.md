@@ -77,7 +77,10 @@ source venv/bin/activate
 pip install -r requirements.txt # or use yusr-requirements.txt for CPU only compute
 pip install -e .
 
-# Optional, if Tensorboard failing to launch
+# If you using yusr-requirements.txt to install the packages, install this too
+pip install torch==2.2.2+cpu --index-url https://download.pytorch.org/whl/cpu
+
+# Optionally, if Tensorboard failing to launch
 pip install 'setuptools<75'
 ```
 
@@ -89,9 +92,6 @@ To sync model artifacts and data with HuggingFace:
 # 1. Copy example env file and fill in your token
 cp .env.example .env
 # Edit .env with your HF_TOKEN from https://huggingface.co/settings/tokens
-
-# 2. Install python-dotenv for auto-loading
-pip install python-dotenv
 ```
 
 ## Quick Start
@@ -149,6 +149,34 @@ python scripts/hf_sync.py push-model --config configs/default.yaml --message "Re
 - `src/serving/api.py` `/retrain` endpoint — pushes both repos (data + model) on API retrain
 - `src/serving/api.py` `/refresh` endpoint — pushes data only after refreshing scholarship cache
 
+## Docker Deployment (HuggingFace Spaces)
+
+The project includes a Dockerfile for deploying on HuggingFace Spaces with Docker runtime.
+
+```bash
+# Build locally
+docker build -t scholarshipid-model .
+
+# Run locally (sets SERVER_PORT=7860 to match HF Spaces)
+docker run -p 7860:7860 \
+  --name scholarship-id
+  -e HF_TOKEN=your_token_here \
+  -e SERVER_PORT=7860 \
+  scholarshipid-model
+```
+
+**How it works:**
+1. Container starts → `serve.py` runs automatically
+2. Pulls models/data from HuggingFace repos (configured in `.env`)
+3. Starts FastAPI on port 7860
+
+**Deploy to HF Spaces:**
+1. Push your repo to GitHub
+2. Create a new Space → select **Docker** runtime
+3. Connect your GitHub repo and give it a name like `scholarshipid-api`
+4. Set `HF_TOKEN` as a secret in the Space settings (Settings → Secrets and variables → Actions)
+5. The API will be live at `https://your-space-name.hf.space`
+
 ## Data
 
 | File | Rows | Keterangan |
@@ -174,7 +202,7 @@ After training, start the inference server:
 python scripts/serve.py # or python -m scripts.serve
 ```
 
-Server runs on `http://localhost:8000` with the following endpoints:
+Server runs on `http://localhost:<PORT_DEFINED_AT_CONFIG>` with the following endpoints:
 
 ### GET `/docs` — Swagger docs
 
