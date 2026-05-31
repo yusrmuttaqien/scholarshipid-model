@@ -21,6 +21,7 @@ data/features/*
 # Outputs — checkpoints & embeddings besar, jangan commit
 outputs/checkpoints/*
 outputs/embeddings/*
+outputs/logs/*
 !outputs/**/.gitkeep
 
 # Notebook checkpoints
