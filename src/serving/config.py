@@ -18,9 +18,9 @@ SCHOLARSHIP_JSON_COLS = [
 
 
 class ServingConfig:
-    """Configuration for the serving layer loaded from configs/serving.yaml."""
+    """Configuration for the serving layer loaded from configs/default.yaml."""
 
-    def __init__(self, config_path: str = "configs/serving.yaml"):
+    def __init__(self, config_path: str = "configs/default.yaml"):
         import yaml
         with open(config_path) as f:
             cfg = yaml.safe_load(f)
@@ -34,6 +34,6 @@ class ServingConfig:
         self.auth_required: bool = cfg["server"].get("auth_required", False)
         self.auth_token: str = cfg["server"].get("auth_token", "")
 
-        # Retraining config (loaded from retraining section in serving.yaml)
+        # Retraining config (loaded from top-level retraining section in default.yaml)
         rt_cfg = cfg.get("retraining", {})
         self.retrain_holdout_fraction: float = rt_cfg.get("holdout_fraction", 0.0)

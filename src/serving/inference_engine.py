@@ -50,8 +50,8 @@ class InferenceEngine:
 
     Usage:
         engine = InferenceEngine(
-            student_tower_path="outputs/checkpoints/student_tower_best.keras",
-            scholarship_tower_path="outputs/checkpoints/scholarship_tower_best.keras",
+            student_tower_path=None,  # resolved from config["models"]["student_tower"]
+            scholarship_tower_path=None,  # resolved from config["models"]["scholarship_tower"]
             config_path="configs/default.yaml",
         )
         engine.initialize()
@@ -68,12 +68,11 @@ class InferenceEngine:
         student_tower_path: Optional[str],
         scholarship_tower_path: Optional[str],
         config_path: str = "configs/default.yaml",
-        serving_config_path: str = "configs/serving.yaml",
     ):
-        self.serving_config = ServingConfig(serving_config_path)
         self.config_path = config_path
 
         # Resolve default paths from ServingConfig when not provided via CLI
+        self.serving_config = ServingConfig(config_path)
         self.student_tower_path = student_tower_path or self.serving_config.student_tower_path
         self.scholarship_tower_path = scholarship_tower_path or self.serving_config.scholarship_tower_path
 
@@ -361,8 +360,8 @@ class InferenceEngine:
 
             # ── 7. Refresh in-memory cache + export to disk ────────────────
             self._refresh_from_df(scholarships_df)
-            output_dir = self.cfg["output"]["embedding_dir"]
-            os.makedirs(output_dir, exist_ok=True)
+            sch_emb_path = self.cfg["embeddings"]["scholarship_emb"]
+            sch_ids_path = self.cfg["embeddings"]["scholarship_ids"]
 
             sch_struct_list = []
             for _, row in scholarships_df.iterrows():
@@ -385,9 +384,9 @@ class InferenceEngine:
             sch_emb = self.scholarship_tower(sch_feat, training=False).numpy()
 
             sch_ids = scholarships_df["scholarship_id"].tolist()
-            np.save(os.path.join(output_dir, "scholarship_emb.npy"), sch_emb)
-            np.save(os.path.join(output_dir, "scholarship_ids.npy"), np.array(sch_ids, dtype=object))
-            _print(f"  Saved scholarship embeddings to {output_dir}/")
+            np.save(sch_emb_path, sch_emb)
+            np.save(sch_ids_path, np.array(sch_ids, dtype=object))
+            _print(f"  Saved scholarship embeddings to {sch_emb_path}")
 
             # ── 8. Update status → done ────────────────────────────────────
             with self._retraining_lock:
@@ -540,9 +539,8 @@ class InferenceEngine:
         Returns True if embeddings were loaded successfully, False otherwise.
         When successful, sets _sch_emb, _sch_ids, and _sch_metadata directly.
         """
-        emb_dir = self.cfg["output"]["embedding_dir"]
-        sch_emb_path = os.path.join(emb_dir, "scholarship_emb.npy")
-        sch_ids_path = os.path.join(emb_dir, "scholarship_ids.npy")
+        sch_emb_path = self.cfg["embeddings"]["scholarship_emb"]
+        sch_ids_path = self.cfg["embeddings"]["scholarship_ids"]
 
         if not (os.path.exists(sch_emb_path) and os.path.exists(sch_ids_path)):
             _print("  No cached embeddings found — will recompute from CSVs.")

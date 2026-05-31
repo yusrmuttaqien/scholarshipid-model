@@ -27,8 +27,7 @@ Student Tower                     Scholarship Tower
 
 ```
 ├── configs/
-│   ├── default.yaml             # Hyperparameter & paths
-│   └── serving.yaml             # Serving configuration (environment, models)
+│   └── default.yaml             # All config: hyperparameters, model checkpoints, server settings
 ├── data/
 │   ├── raw/                     # students.csv, scholarships.csv, feedback.csv
 │   ├── processed/
@@ -91,14 +90,22 @@ python scripts/precompute_text_embeddings.py # or python -m scripts.precompute_t
 # Step 2 — Train model
 python scripts/train.py --config configs/default.yaml # or python -m scripts.train --config configs/default.yaml
 
-# Step 3 — Evaluasi pada test set
-python scripts/evaluate.py \  # or python -m scripts.evaluate \
+# Step 3 — Evaluasi pada test set (checkpoint paths default to configs/default.yaml)
+python scripts/evaluate.py \
+  --config configs/default.yaml
+
+# Override checkpoint paths if needed:
+python scripts/evaluate.py \
   --config configs/default.yaml \
   --student_checkpoint outputs/checkpoints/student_tower_best.keras \
   --scholarship_checkpoint outputs/checkpoints/scholarship_tower_best.keras
 
-# Step 4 — Export scholarship embeddings untuk serving
-python scripts/export_embeddings.py \  # or python -m scripts.export_embeddings \
+# Step 4 — Export scholarship embeddings untuk serving (checkpoint path defaults to config)
+python scripts/export_embeddings.py \
+  --config configs/default.yaml
+
+# Override checkpoint path if needed:
+python scripts/export_embeddings.py \
   --scholarship_checkpoint outputs/checkpoints/scholarship_tower_best.keras
 ```
 
@@ -131,15 +138,13 @@ Server runs on `http://localhost:8000` with the following endpoints:
 
 ### GET `/docs` — Swagger docs
 
-### GET `/health` — Health check
-
 ### Configuration
 
-Edit `configs/serving.yaml` to configure:
-- **Model paths**: Student & scholarship tower checkpoint locations
-- **Data source**: CSV path for scholarship refresh
-- **Server settings**: Host, port, CORS origins
-- **Environment**: `local` (development) vs `production` modes
+All configuration is in `configs/default.yaml`:
+- **Model checkpoints**: `models.student_tower`, `models.scholarship_tower`
+- **Server settings**: `server.host`, `server.port`, `server.cors_origins`
+- **Auth**: `server.auth_required`, `server.auth_token` (set for production)
+- **Retraining**: `retraining.holdout_fraction` (0.0 = use all data)
 
 ## Performance (test set)
 

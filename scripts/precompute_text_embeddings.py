@@ -9,26 +9,18 @@ Output:
     data/features/text_embeddings/scholarships.npy  (43, 384)
     outputs/embeddings/scholarship_ids.npy           list scholarship_id strings
 """
+import argparse
 import os
 import numpy as np
 import pandas as pd
 
 from src.utils.feature_engineering import encode_text
 
-DATA_DIR    = "data/raw"
-EMB_DIR     = "data/features/text_embeddings"
-OUTPUT_DIR  = "outputs/embeddings"
 
-os.makedirs(EMB_DIR, exist_ok=True)
-os.makedirs(OUTPUT_DIR, exist_ok=True)
-
-STU_EMB_PATH = os.path.join(EMB_DIR, "students.npy")
-SCH_EMB_PATH = os.path.join(EMB_DIR, "scholarships.npy")
-SCH_IDS_PATH = os.path.join(OUTPUT_DIR, "scholarship_ids.npy")
-
-# Source files to check for staleness
-STU_SRC  = os.path.join(DATA_DIR, "students.csv")
-SCH_SRC  = os.path.join(DATA_DIR, "scholarships.csv")
+def parse_args():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--config", type=str, default="configs/default.yaml")
+    return parser.parse_args()
 
 
 def _needs_recompute(src_path: str, dst_path: str) -> bool:
@@ -39,8 +31,25 @@ def _needs_recompute(src_path: str, dst_path: str) -> bool:
 
 
 def main():
-    students_df     = pd.read_csv(os.path.join(DATA_DIR, "students.csv"))
-    scholarships_df = pd.read_csv(os.path.join(DATA_DIR, "scholarships.csv"))
+    args = parse_args()
+    with open(args.config) as f:
+        cfg = __import__("yaml").safe_load(f)
+
+    data_root   = cfg["data"]["raw_path"]
+    emb_dir     = cfg["data"]["text_embeddings_path"]
+
+    os.makedirs(emb_dir, exist_ok=True)
+
+    STU_EMB_PATH = os.path.join(emb_dir, "students.npy")
+    SCH_EMB_PATH = os.path.join(emb_dir, "scholarships.npy")
+    SCH_IDS_PATH = cfg["embeddings"]["scholarship_ids"]
+
+    # Source files to check for staleness
+    STU_SRC  = os.path.join(data_root, "students.csv")
+    SCH_SRC  = os.path.join(data_root, "scholarships.csv")
+
+    students_df     = pd.read_csv(os.path.join(data_root, "students.csv"))
+    scholarships_df = pd.read_csv(os.path.join(data_root, "scholarships.csv"))
 
     print(f"Students    : {len(students_df):,}")
     print(f"Scholarships: {len(scholarships_df)}")

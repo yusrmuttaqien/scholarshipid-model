@@ -26,7 +26,6 @@ training:
   epochs: 3
   batch_size: 256
   learning_rate: 1.0e-3
-  loss: sampled_softmax_weighted
 
 feedback_weights:
   accepted: 5.0
@@ -34,19 +33,34 @@ feedback_weights:
   click: 1.0
 
 evaluation:
-  metrics: [recall@5, ndcg@5, mrr]
   k_values: [5]
 
-serving:
-  embedding_dim: 128
-  retrieval: brute_force
-  scholarship_emb_path: outputs/embeddings/scholarship_emb.npy
-  scholarship_ids_path: outputs/embeddings/scholarship_ids.npy
+# Retraining configuration (used by /retrain endpoint for holdout split)
+retraining:
+  holdout_fraction: 0.0   # 0.0 = use all data for training, 0.20 = hold out last 20%
 
+# Model checkpoint paths (shared by training, evaluation, export, retrain, serving)
+models:
+  student_tower: outputs/checkpoints/student_tower_best.keras
+  scholarship_tower: outputs/checkpoints/scholarship_tower_best.keras
+
+# Server configuration (used by /refresh and /retrain endpoints)
+server:
+  host: 0.0.0.0
+  port: 8000
+  cors_origins: "*"  # Local: allow all. Production: restrict to specific domains (e.g., "https://scholarship.id")
+  auth_required: false  # Local: false. Production: true to enable Bearer token auth on /refresh
+  auth_token: ""  # Set this to a secret token for production auth
+
+# Output directories (used by training, serving, export scripts)
 output:
   checkpoint_dir: outputs/checkpoints/
   log_dir: outputs/logs/
   embedding_dir: outputs/embeddings/
+
+embeddings:
+  scholarship_emb: outputs/embeddings/scholarship_emb.npy
+  scholarship_ids: outputs/embeddings/scholarship_ids.npy
 
 tensorboard:
   enabled: true

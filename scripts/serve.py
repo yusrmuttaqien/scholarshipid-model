@@ -3,8 +3,7 @@
 Usage:
     python scripts/serve.py
 
-Configuration is read from configs/serving.yaml (environment-specific settings)
-and configs/default.yaml (model architecture + data paths).
+Configuration is read from configs/default.yaml (all config in one place).
 
 Override model paths via CLI flags if needed:
     python scripts/serve.py --student-tower outputs/checkpoints/student_tower_best.keras \\
@@ -30,16 +29,15 @@ def parse_args():
         "--student-tower",
         type=str,
         default=None,
-        help="Override student tower checkpoint path (defaults from configs/serving.yaml)",
+        help="Override student tower checkpoint path (defaults from config)",
     )
     parser.add_argument(
         "--scholarship-tower",
         type=str,
         default=None,
-        help="Override scholarship tower checkpoint path (defaults from configs/serving.yaml)",
+        help="Override scholarship tower checkpoint path (defaults from config)",
     )
     parser.add_argument("--config", type=str, default="configs/default.yaml")
-    parser.add_argument("--serving-config", type=str, default="configs/serving.yaml")
     return parser.parse_args()
 
 
@@ -48,12 +46,11 @@ def main():
 
     # Build and initialize inference engine (loads models, warms up SBERT, caches scholarships)
     # Pass None for paths not provided via CLI — InferenceEngine will resolve defaults from config
-    print(f"Initializing InferenceEngine (config: {args.serving_config}) ...")
+    print(f"Initializing InferenceEngine (config: {args.config}) ...")
     engine = InferenceEngine(
         student_tower_path=args.student_tower,
         scholarship_tower_path=args.scholarship_tower,
         config_path=args.config,
-        serving_config_path=args.serving_config,
     )
     engine.initialize()
 

@@ -22,8 +22,7 @@ from src.utils.data_loader import load_precomputed_features
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--config",                  type=str, default="configs/default.yaml")
-    parser.add_argument("--scholarship_checkpoint",  type=str,
-                        default="outputs/checkpoints/scholarship_tower_best.keras")
+    parser.add_argument("--scholarship_checkpoint",  type=str, default=None)
     return parser.parse_args()
 
 
@@ -31,6 +30,13 @@ def main():
     args = parse_args()
     with open(args.config) as f:
         cfg = yaml.safe_load(f)
+
+    # Resolve checkpoint path from CLI or config defaults
+    scholarship_checkpoint = (
+        args.scholarship_checkpoint
+        if args.scholarship_checkpoint
+        else cfg["models"]["scholarship_tower"]
+    )
 
     output_dir = cfg["output"]["embedding_dir"]
     os.makedirs(output_dir, exist_ok=True)
@@ -44,7 +50,7 @@ def main():
     # ── Load scholarship tower dari format .keras ─────────────────────────────
     custom_objects    = {"L2Normalize": L2Normalize}
     scholarship_tower = tf.keras.models.load_model(
-        args.scholarship_checkpoint, custom_objects=custom_objects)
+        scholarship_checkpoint, custom_objects=custom_objects)
 
     # ── Encode all scholarships ───────────────────────────────────────────────
     sch_feat_all = np.concatenate([sch_struct, sch_text_emb], axis=1)  # (43, 509)
@@ -56,14 +62,11 @@ def main():
     print(f"L2 norms — min={norms.min():.6f}  max={norms.max():.6f}  (should be ≈1.0)")
 
     # ── Save ──────────────────────────────────────────────────────────────────
-    emb_path = os.path.join(output_dir, "scholarship_emb.npy")
-    ids_path = os.path.join(output_dir, "scholarship_ids.npy")
+    np.save(cfg["embeddings"]["scholarship_emb"], sch_emb)
+    np.save(cfg["embeddings"]["scholarship_ids"], np.array(sch_ids, dtype=object))
 
-    np.save(emb_path, sch_emb)
-    np.save(ids_path, np.array(sch_ids, dtype=object))
-
-    print(f"\nSaved: {emb_path}")
-    print(f"Saved: {ids_path}")
+    print(f"\nSaved: {cfg['embeddings']['scholarship_emb']}")
+    print(f"Saved: {cfg['embeddings']['scholarship_ids']}")
 
 
 if __name__ == "__main__":
