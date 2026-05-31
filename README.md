@@ -1,3 +1,12 @@
+---
+title: ScholarshipID
+emoji: 🎓
+colorFrom: blue
+colorTo: green
+sdk: docker
+pinned: false
+---
+
 # ScholarshipID — Two-Tower Recommendation Model
 
 Sistem rekomendasi beasiswa menggunakan arsitektur **Two-Tower (Dual Encoder)** untuk mencocokkan profil siswa SMA dengan beasiswa S1 luar negeri, menghasilkan top-5 beasiswa paling relevan per siswa.
