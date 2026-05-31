@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ScholarshipID — AI Recommendation API</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+            height: 100vh;
+            display: flex;
+            background: #f5faf6;
+        }
+        .left-panel {
+            flex: 1;
+            background: linear-gradient(135deg, #a8e6a0 0%, #7dd593 50%, #4a9c6d 100%);
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            padding: 60px;
+            color: white;
+        }
+        .left-panel .tag {
+            font-size: 14px;
+            text-transform: uppercase;
+            letter-spacing: 2px;
+            opacity: 0.9;
+            margin-bottom: 20px;
+        }
+        .left-panel h1 {
+            font-size: 56px;
+            font-weight: 700;
+            line-height: 1.1;
+            margin-bottom: 30px;
+        }
+        .left-panel h1 em {
+            font-family: Georgia, serif;
+            font-style: italic;
+            display: block;
+        }
+        .left-panel .subtitle {
+            font-size: 18px;
+            opacity: 0.9;
+            max-width: 400px;
+            line-height: 1.6;
+        }
+        .right-panel {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            padding: 60px;
+        }
+        .right-panel h2 {
+            font-size: 32px;
+            color: #2d3b2d;
+            margin-bottom: 12px;
+        }
+        .right-panel .description {
+            color: #5a6b5a;
+            font-size: 16px;
+            margin-bottom: 40px;
+            line-height: 1.6;
+        }
+        .btn {
+            display: inline-block;
+            padding: 14px 32px;
+            background: #2d5a3d;
+            color: white;
+            text-decoration: none;
+            border-radius: 8px;
+            font-size: 16px;
+            font-weight: 600;
+            transition: background 0.2s;
+        }
+        .btn:hover { background: #1e4030; }
+        .links-section {
+            margin-top: 50px;
+        }
+        .links-section h3 {
+            font-size: 14px;
+            text-transform: uppercase;
+            letter-spacing: 1.5px;
+            color: #7a8b7a;
+            margin-bottom: 16px;
+        }
+        .links-section a {
+            display: block;
+            color: #2d5a3d;
+            text-decoration: none;
+            font-size: 15px;
+            margin-bottom: 10px;
+            transition: color 0.2s;
+        }
+        .links-section a:hover { color: #4a9c6d; }
+    </style>
+</head>
+<body>
+    <div class="left-panel">
+        <div class="tag">ScholarshipID</div>
+        <h1>Discover<br><em>Your Future.</em></h1>
+        <div class="subtitle">AI-powered scholarship matching built by the AI Team at ScholarshipID.</div>
+    </div>
+    <div class="right-panel">
+        <h2>Recommendation API</h2>
+        <p class="description">Two-tower retrieval model for matching students to scholarships. Submit a student profile and get personalized scholarship recommendations.</p>
+        <a href="/docs" class="btn">View API Documentation</a>
+        <div class="links-section">
+            <h3>Resources</h3>
+            <a href="https://github.com/yusrmuttaqien/scholarshipid-model" target="_blank">GitHub Source Code &rarr;</a>
+            <a href="https://huggingface.co/ydmhmhm/scholarshipid-model" target="_blank">Models Repository &rarr;</a>
+            <a href="https://huggingface.co/datasets/ydmhmhm/scholarshipid-data" target="_blank">Datasets Repository &rarr;</a>
+        </div>
+    </div>
+</body>
+</html>

@@ -1,0 +1,75 @@
+experiment:
+  name: two_tower_v2
+  seed: 42
+
+data:
+  raw_path: data/raw/
+  processed_path: data/processed/
+  features_path: data/features/
+  text_embeddings_path: data/features/text_embeddings/
+  train_split: 0.70
+  val_split: 0.15
+  test_split: 0.15
+
+model:
+  student_tower:
+    input_dim: 506           # 122 struct + 384 text
+    hidden_dims: [256, 128]
+    output_dim: 128
+  scholarship_tower:
+    input_dim: 509           # 125 struct + 384 text
+    hidden_dims: [256, 128]
+    output_dim: 128
+  temperature: 0.1
+
+training:
+  epochs: 3
+  batch_size: 256
+  learning_rate: 1.0e-3
+
+feedback_weights:
+  accepted: 5.0
+  apply: 2.0
+  click: 1.0
+
+evaluation:
+  k_values: [5]
+
+# Retraining configuration (used by /retrain endpoint for holdout split)
+retraining:
+  holdout_fraction: 0.0   # 0.0 = use all data for training, 0.20 = hold out last 20%
+
+# Model checkpoint paths (shared by training, evaluation, export, retrain, serving)
+models:
+  student_tower: outputs/checkpoints/student_tower_best.keras
+  scholarship_tower: outputs/checkpoints/scholarship_tower_best.keras
+
+# Server configuration (used by /refresh and /retrain endpoints)
+server:
+  host: 0.0.0.0
+  port: 7860
+  cors_origins: "*"  # Local: allow all. Production: restrict to specific domains (e.g., "https://scholarship.id")
+  auth_required: false  # Local: false. Production: true to enable Bearer token auth on /refresh
+  auth_token: ""  # Set this to a secret token for production auth
+
+# Output directories (used by training, serving, export scripts)
+output:
+  checkpoint_dir: outputs/checkpoints/
+  log_dir: outputs/logs/
+  embedding_dir: outputs/embeddings/
+
+# HuggingFace artifact sync (pull before serving, push after retraining)
+# Two repos: data repo (raw CSV + logs) and model repo (checkpoints + embeddings)
+hf:
+  repo_id_data: ydmhmhm/scholarshipid-data           # Dataset repo (data/raw/, logs/)
+  repo_id_model: ydmhmhm/scholarshipid-model         # Model repo (checkpoints, embeddings)
+  token_env: HF_TOKEN  # single environment variable for both repos
+
+embeddings:
+  scholarship_emb: outputs/embeddings/scholarship_emb.npy
+  scholarship_ids: outputs/embeddings/scholarship_ids.npy
+
+tensorboard:
+  enabled: true
+  histogram_freq: 1  # log embeddings every N epochs (0 = disabled)
+  suffix: ""         # optional suffix for log directory name

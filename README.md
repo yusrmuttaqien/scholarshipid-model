@@ -1,435 +1,232 @@
-Recent works available on alternate `dev/<username>` branches.
-
-# Scholarship.id: Two-Tower Recommendation System
-
-Recommendation system for high school students seeking bachelor's scholarships abroad. Uses a two-tower neural network with a three-stage pipeline (hard filter → NN similarity → text similarity bonus).
-
+---
+title: ScholarshipID
+emoji: 🎓
+colorFrom: blue
+colorTo: green
+sdk: docker
+pinned: false
 ---
 
-## Data Structure Overview
+# ScholarshipID — Two-Tower Recommendation Model
 
-### Core Entities
+Sistem rekomendasi beasiswa menggunakan arsitektur **Two-Tower (Dual Encoder)** untuk mencocokkan profil siswa SMA dengan beasiswa S1 luar negeri, menghasilkan top-5 beasiswa paling relevan per siswa.
 
-| Entity | Description | Count |
-|--------|-------------|-------|
-| `Student` | High school student profile | 20,000 |
-| `Scholarship` | Scholarship opportunity | 800 |
-| `Pair` | Student-scholarship interaction (for training) | ~250,000+ |
-| `Feedback` | Implicit feedback from students | ~100,000+ |
-
----
-
-## Student Fields
-
-```python
-@dataclass
-class Student:
-    # ─── Identity ─────────────────────────────────────
-    student_id: str                    # Unique identifier (e.g., "STU_000001")
-    nationality: Country
-
-    # ─── Demographics ─────────────────────────────────
-    age: int                           # 16-18 (high school students)
-    current_degree_level: DegreeLevel  # Always High School
-    target_degree_level: DegreeLevel   # Always Bachelor's
-
-    # ─── Academic Profile ─────────────────────────────
-    high_school_track: HighSchoolTrack
-    school_name: str                   # School name
-    overall_report_card_average: float # Overall report card average (0-100)
-    math_score: float                  # Math score on latest report card (0-100)
-    english_score: float               # English score on latest report card (0-100)
-    major_subject_average: float       # Average score of major-specific subjects (0-100)
-                                       #   Science → avg(Physics, Chemistry, Biology)
-                                       #   Social Studies → avg(Economics, Geography, Sociology)
-                                       #   Languages → avg(Literature, Anthropology, Foreign Language)
-
-    # ─── Language Proficiency ─────────────────────────
-    language_proficiency: List[LanguageProficiency]  # See LanguageProficiency below
-                                                     # Empty list is valid for many high school students
-                                                     # have not taken a formal language test yet
-
-    # ─── Achievements ─────────────────────────────────
-    olympiad_level: OlympiadLevel
-    olympiad_subjects: List[OlympiadSubject]
-    leadership_experience_count: int   # Leadership roles held (student council, club head, etc.)
-    volunteer_experience_count: int    # Volunteer / community service activities
-    competition_wins_count: int        # Non-olympiad competition awards
-
-    # ─── Background ───────────────────────────────────
-    school_tier: SchoolTier
-    family_income_category: IncomeCategory
-    from_underrepresented_region: bool # From underrepresented regions
-
-    # ─── Career Intent ────────────────────────────────
-    intended_career_track: CareerTrack
-    willing_to_return_home: bool       # Willing to return home after study
-    target_countries: List[Country]
-
-    # ─── Text Fields (for text similarity) ────────────
-    personal_statement: str            # Personal statement text
-    achievements_narrative: str        # Achievement summary
-    future_goals: str                  # Post-study contribution and career goals
-
-    # ─── Funding Preferences ──────────────────────────
-    needs_full_funding: bool           # Wants fully-funded scholarship
-    can_self_fund_living: bool         # Can cover living expenses independently
-```
-
----
-
-## Scholarship Fields
-
-```python
-@dataclass
-class Scholarship:
-    # ─── Identity ─────────────────────────────────────
-    scholarship_id: str                # Unique identifier (e.g., "SCH_000001")
-    name: str                          # Scholarship name
-
-    # ─── Eligibility Constraints (Hard Filters) ───────
-    eligible_nationalities: List[Country]
-    min_age: int                       # Minimum age requirement
-    max_age: int                       # Maximum age requirement
-    eligible_degree_levels: List[DegreeLevel]
-    eligible_high_school_tracks: List[HighSchoolTrack]
-    eligible_fields: List[MajorField]
-    preferred_school_tier: SchoolTier
-    min_report_card_average: float     # Minimum overall report card average (0-100)
-    min_major_subject_average: float   # Minimum major-subject average (0-100)
-    language_requirements: List[LanguageRequirement]  # See LanguageRequirement below
-    requires_financial_need: bool      # Requires low-income family background
-    max_family_income_category: IncomeCategory
-
-    # ─── Location ─────────────────────────────────────
-    host_country: Country
-    host_region: HostRegion
-
-    # ─── Selection Criteria (Weights) ─────────────────
-    selection_criteria: SelectionCriteria  # See SelectionCriteria below
-
-    # ─── Funding Coverage (Structured) ────────────────
-    funding_coverage: FundingCoverage  # See FundingCoverage below
-
-    # ─── Career Preference ────────────────────────────
-    career_track_preference: CareerTrack
-
-    # ─── Service Requirements ─────────────────────────
-    requires_return_home_country: bool # Must return home after study
-
-    # ─── Text Fields (for text similarity) ────────────
-    mission_statement: str             # Scholarship mission text
-    target_recipient_profile: str      # Ideal candidate description
-```
-
----
-
-## Supporting Data Structures
-
-### LanguageProficiency
-
-```python
-@dataclass
-class LanguageProficiency:
-    test_type: LanguageTest
-    score: float      # Test score
-    valid_until: str  # ISO date string (optional)
-```
-
-### LanguageRequirement
-
-```python
-@dataclass
-class LanguageRequirement:
-    test_type: LanguageTest
-    min_score: float    # Minimum required score
-    is_mandatory: bool  # True = hard filter, False = preferred but not required
-```
-
-### FundingCoverage
-
-```python
-@dataclass
-class FundingCoverage:
-    covers_tuition: bool         # Covers tuition fees
-    covers_living_expense: bool  # Covers living expenses
-    covers_airfare: bool         # Covers airfare
-    covers_insurance: bool       # Covers insurance
-    monthly_stipend: float       # Monthly stipend in local currency (0 if none)
-
-    # Derived properties:
-    is_full_funding: bool        # Covers both tuition AND living
-    coverage_count: int          # Number of aspects covered (0-4)
-```
-
-### SelectionCriteria
-
-```python
-@dataclass
-class SelectionCriteria:
-    academic: float        # Weight for academic excellence (0-1, normalized)
-    leadership: float      # Weight for leadership experience
-    olympiad: float        # Weight for olympiad / competition achievement
-    extracurricular: float # Weight for extracurricular activities
-    essay: float           # Weight for essay/motivation
-
-    # Note: All weights sum to 1.0
-```
-
-### Pair
-
-```python
-@dataclass
-class Pair:
-    student_id: str         # Student identifier
-    scholarship_id: str     # Scholarship identifier
-    relevance_score: float  # Continuous score 0.0-1.0 (regression target)
-                            #   >=0.7 → Match
-                            #   0.3-0.7 → In-Between
-                            #   <0.3 → Not Match
-    timestamp: str          # ISO datetime for time-based splitting
-```
-
-### Feedback
-
-```python
-@dataclass
-class Feedback:
-    student_id: str       # Student identifier
-    scholarship_id: str   # Scholarship identifier
-    feedback_type: str    # "apply" | "click" | "view" | "reject"
-    timestamp: str        # ISO datetime
-
-    # Derived property:
-    weight: float         # Training weight (see table below)
-```
-
----
-
-## Enum Values
-
-### DegreeLevel
-
-| Value | Description |
-|-------|-------------|
-| `high_school` | High school |
-| `bachelors` | Bachelor's degree |
-
-### Country
-
-| Value | Country |
-|-------|---------|
-| `china` | China |
-| `india` | India |
-| `indonesia` | Indonesia |
-| `japan` | Japan |
-| `malaysia` | Malaysia |
-| `philippines` | Philippines |
-| `singapore` | Singapore |
-| `south_korea` | South Korea |
-| `thailand` | Thailand |
-| `vietnam` | Vietnam |
-| `france` | France |
-| `germany` | Germany |
-| `netherlands` | Netherlands |
-| `sweden` | Sweden |
-| `uk` | United Kingdom |
-| `switzerland` | Switzerland |
-| `canada` | Canada |
-| `usa` | United States |
-| `argentina` | Argentina |
-| `brazil` | Brazil |
-| `chile` | Chile |
-| `egypt` | Egypt |
-| `kenya` | Kenya |
-| `morocco` | Morocco |
-| `nigeria` | Nigeria |
-| `south_africa` | South Africa |
-| `australia` | Australia |
-| `new_zealand` | New Zealand |
-
-### HighSchoolTrack
-
-| Value | Description |
-|-------|-------------|
-| `science` | Science track (Physics, Chemistry, Biology) |
-| `social_studies` | Social Studies track (Economics, Geography, Sociology) |
-| `languages` | Languages & Literature track |
-| `religion` | Religious studies track |
-| `vocational` | Vocational track |
-
-### OlympiadLevel
-
-| Value | Description |
-|-------|-------------|
-| `none` | Never competed |
-| `school` | School-level (intra-school) |
-| `city` | City / district level |
-| `provincial` | Provincial level |
-| `national` | National level |
-| `international` | International (IMO, IPhO, IOI, etc.) |
-
-### OlympiadSubject
-
-| Value | Description |
-|-------|-------------|
-| `mathematics` | Mathematics olympiad |
-| `physics` | Physics olympiad |
-| `chemistry` | Chemistry olympiad |
-| `biology` | Biology olympiad |
-| `economics` | Economics olympiad |
-| `geography` | Geography olympiad |
-| `computer_science` | Computer science olympiad |
-| `linguistics` | Linguistics olympiad |
-| `astronomy` | Astronomy olympiad |
-| `informatics` | Informatics olympiad |
-| `history` | History olympiad |
-| `english_language` | English language olympiad |
-| `business_studies` | Business studies olympiad |
-
-### IncomeCategory
-
-| Value | Description |
-|-------|-------------|
-| `very_low` | Very low income |
-| `low` | Low income |
-| `middle` | Middle income |
-| `upper_middle` | Upper middle income |
-| `high` | High income |
-
-### SchoolTier
-
-| Value | Description |
-|-------|-------------|
-| `excellence` | Top-tier / boarding school |
-| `public_a` | Public school, accredited A |
-| `private_a` | Private school, accredited A |
-| `accredited_b` | Public or private, accredited B |
-| `accredited_c` | Accredited C schools |
-| `unaccredited` | Not yet accredited |
-| `unknown` | Accreditation status unknown |
-
-### MajorField
-
-| Value | Category |
-|-------|----------|
-| `computer_science` | CS/IT |
-| `engineering` | Engineering |
-| `medicine` | Medical sciences |
-| `business` | Business administration |
-| `economics` | Economics |
-| `law` | Legal studies |
-| `education` | Education |
-| `arts_humanities` | Arts & humanities |
-| `social_sciences` | Social sciences |
-| `agriculture` | Agriculture |
-| `mathematics` | Mathematics |
-| `physics` | Physics |
-| `chemistry` | Chemistry |
-| `biology` | Biology |
-
-### CareerTrack
-
-| Value | Description |
-|-------|-------------|
-| `academic` | Academic/research career |
-| `industry` | Industry/tech career |
-| `government` | Government service |
-| `ngo_npo` | NGO/NPO sector |
-| `entrepreneurship` | Entrepreneurship |
-| `public_service` | Public service |
-
-### LanguageTest
-
-| Value | Description |
-|-------|-------------|
-| `toefl` | TOEFL (English) |
-| `ielts` | IELTS (English) |
-| `topik` | TOPIK (Korean) |
-| `jlpt` | JLPT (Japanese) |
-| `delf` | DELF (French) |
-| `hsk` | HSK (Chinese) |
-
-### HostRegion
-
-| Value | Description |
-|-------|-------------|
-| `asia` | Asia |
-| `europe` | Europe |
-| `north_america` | North America |
-| `south_america` | South America |
-| `africa` | Africa |
-| `oceania` | Oceania |
-
----
-
-## Feedback Types & Weights
-
-| Type | Weight | Signal Strength | Description |
-|------|--------|-----------------|-------------|
-| `apply` | 3.0 | Strong positive | Applied to scholarship |
-| `click` | 2.0 | Soft positive | Clicked on recommendation |
-| `view` | 1.0 | Weak positive | Saw in recommendations |
-| `reject` | -1.0 | Explicit negative | Swiped away / not interested |
-
----
-
-## Training vs Inference
-
-### Model Training (Dataset Creation)
-
-The two-tower neural network is trained as a **regression model** that predicts continuous `relevance_score` (0.0–1.0). The training dataset contains balanced pairs across three classes:
-
-| Class | Relevance Range | Description |
-|-------|-----------------|-------------|
-| **Match** | ≥ 0.7 | High alignment between student and scholarship |
-| **In-Between** | 0.3 – 0.7 | Moderate alignment, borderline cases |
-| **Not Match** | < 0.3 | Low alignment between student and scholarship |
-
-**Key point**: Hard filters are NOT used during training. The model learns soft similarity from the full spectrum of pairs, including ineligible matches (high relevance_score) and eligible but poor matches (low relevance_score). This allows the NN to learn fine-grained distinctions.
-
-### Inference Pipeline (Serving Recommendations)
-
-After training, the three-stage pipeline is applied at inference time to produce final ranked recommendations:
+## Arsitektur
 
 ```
-┌─────────────────────────────────────────────┐
-│  Stage 1: Hard Filter (Deterministic)       │
-│  ─────────────────────────────────────────   │
-│  • Nationality in eligible_nationalities    │
-│  • Target degree in eligible_degree_levels  │
-│  • Age within [min_age, max_age]            │
-│  • Report card average meets minimum        │
-│  • Major subject average meets minimum      │
-│  • Mandatory language requirements met      │
-│  • Return-home willingness check            │
-│  • Financial need check (if required)       │
-│                                             │
-│  Output: Eligible scholarships only         │
-└──────────────────┬──────────────────────────┘
-                   ↓
-┌─────────────────────────────────────────────┐
-│  Stage 2: Two-Tower Neural Network          │
-│  ─────────────────────────────────────────   │
-│  Student Tower → Embedding (d=64-128)       │
-│  Scholarship Tower → Embedding (d=64-128)   │
-│                                             │
-│  Cosine Similarity → Sigmoid → Probability  │
-│                                             │
-│  Output: Soft similarity score [0, 1]       │
-└──────────────────┬──────────────────────────┘
-                   ↓
-┌─────────────────────────────────────────────┐
-│  Stage 3: Text Similarity (Bonus)           │
-│  ─────────────────────────────────────────   │
-│  • personal_statement ↔ mission_statement   │
-│  • achievements_narrative ↔ target_recipient_profile  │
-│  • future_goals ↔ target_recipient_profile            │
-│                                             │
-│  Output: Text bonus added to NN score       │
-│  Final score clamped to [0, 1]              │
-└──────────────────┬──────────────────────────┘
-                   ↓
-┌─────────────────────────────────────────────┐
-│  Final Ranked Recommendations per Student   │
-└─────────────────────────────────────────────┘
+Student Tower                     Scholarship Tower
+  Input(506)                         Input(509)
+  Dense(256, relu)                   Dense(256, relu)
+  Dense(128, relu)                   Dense(128, relu)
+  L2Normalize                        L2Normalize
+      │                                   │
+      └──────── Dot Product ──────────────┘
+                     │
+              Top-5 Ranking
+```
+
+- **Student Tower**: concat(structured_features=122, text_emb=384) → 128-dim L2-normalized embedding
+- **Scholarship Tower**: concat(structured_features=125, text_emb=384) → 128-dim L2-normalized embedding
+- **Text Encoder**: Sentence-BERT `all-MiniLM-L6-v2` (384-dim, frozen, pre-computed)
+- **Retrieval**: Brute-force dot product vs semua 44 scholarship
+- **Loss**: Sampled softmax + in-batch negatives, temperature=0.1, sample weighting (accepted=5×, apply=2×, click=1×)
+- **Metrics**: Recall@5, NDCG@5, MRR
+
+## Struktur Folder
+
+```
+├── configs/
+│   └── default.yaml             # All config: hyperparameters, model checkpoints, server settings
+├── data/
+│   ├── raw/                     # students.csv, scholarships.csv, feedback.csv
+│   ├── processed/
+│   └── features/
+│       └── text_embeddings/     # Cache SBERT embeddings (.npy)
+├── notebooks/
+│   └── notebook_two_tower.ipynb # Referensi implementasi (TF/Keras)
+├── outputs/
+│   ├── checkpoints/             # student_tower_best.keras, scholarship_tower_best.keras
+│   ├── embeddings/              # scholarship_emb.npy, scholarship_ids.npy
+│   └── logs/                    # TensorBoard logs (tb_{experiment_name}/)
+├── scripts/
+│   ├── hf_sync.py               # HuggingFace artifact sync (pull/push)
+│   ├── precompute_text_embeddings.py  # Step 1: cache SBERT
+│   ├── train.py                        # Step 2: training
+│   ├── evaluate.py                    # Step 3: evaluasi test set
+│   ├── export_embeddings.py           # Step 4: export untuk serving
+│   └── serve.py                       # Start FastAPI inference server
+└── src/
+    ├── models/
+    │   ├── student_tower.py
+    │   ├── scholarship_tower.py
+    │   └── two_tower.py
+    ├── serving/
+    │   ├── inference_engine.py        # Inference engine (encode, retrieve)
+    │   └── api.py                     # FastAPI endpoints
+    ├── trainers/trainer.py
+    ├── evaluators/evaluator.py
+    ├── utils/
+    │   ├── feature_engineering.py
+    │   └── data_loader.py
+```
+
+## Setup
+
+> **Windows**: pastikan [Microsoft Visual C++ Redistributable 2019](https://aka.ms/vs/17/release/vc_redist.x64.exe) sudah terinstall.
+
+```bash
+# Pastikan python di sini adalah Python sistem (bukan conda base). Minimal versi 3.11
+python -m venv venv # or uv venv venv -p 3.11
+
+# Windows
+.\venv\Scripts\Activate.ps1
+# Mac/Linux
+source venv/bin/activate
+
+pip install -r requirements.txt # or use yusr-requirements.txt for CPU only compute
+pip install -e .
+
+# If you using yusr-requirements.txt to install the packages, install this too
+pip install torch==2.2.2+cpu --index-url https://download.pytorch.org/whl/cpu
+
+# Optionally, if Tensorboard failing to launch
+pip install 'setuptools<75'
+```
+
+### HuggingFace Setup (Artifact Sync)
+
+To sync model artifacts and data with HuggingFace:
+
+```bash
+# 1. Copy example env file and fill in your token
+cp .env.example .env
+# Edit .env with your HF_TOKEN from https://huggingface.co/settings/tokens
+```
+
+## Quick Start
+
+```bash
+# Step 1 — Pre-compute text embeddings (sekali saja, ~5-10 menit)
+python scripts/precompute_text_embeddings.py # or python -m scripts.precompute_text_embeddings
+
+# Step 2 — Train model
+python scripts/train.py --config configs/default.yaml # or python -m scripts.train --config configs/default.yaml
+
+# Step 3 — Evaluasi pada test set (checkpoint paths default to configs/default.yaml)
+python scripts/evaluate.py \
+  --config configs/default.yaml
+
+# Override checkpoint paths if needed:
+python scripts/evaluate.py \
+  --config configs/default.yaml \
+  --student_checkpoint outputs/checkpoints/student_tower_best.keras \
+  --scholarship_checkpoint outputs/checkpoints/scholarship_tower_best.keras
+
+# Step 4 — Export scholarship embeddings untuk serving (checkpoint path defaults to config)
+python scripts/export_embeddings.py \
+  --config configs/default.yaml
+
+# Override checkpoint path if needed:
+python scripts/export_embeddings.py \
+  --scholarship_checkpoint outputs/checkpoints/scholarship_tower_best.keras
+```
+
+## HuggingFace Artifact Sync
+
+Two separate repos are used for syncing:
+
+| Repo | Contents | Type |
+|---|---|---|
+| `ydmhmhm/scholarshipid-data` | `data/raw/`, `outputs/logs/` | Dataset |
+| `ydmhmhm/scholarshipid-model` | `checkpoints/`, `embeddings/` | Model |
+
+**CLI commands:**
+
+```bash
+# Pull data + model from HuggingFace (before starting serving)
+python scripts/hf_sync.py pull-data --config configs/default.yaml
+python scripts/hf_sync.py pull-model --config configs/default.yaml
+
+# Push data + model to HuggingFace (after retraining/refreshing)
+python scripts/hf_sync.py push-data --config configs/default.yaml --message "New data"
+python scripts/hf_sync.py push-model --config configs/default.yaml --message "Retrained"
+```
+
+**Auto-integration:**
+- `scripts/serve.py` — pulls both repos before FastAPI starts
+- `scripts/retrain.py` — pushes both repos after retraining
+- `src/serving/api.py` `/retrain` endpoint — pushes both repos (data + model) on API retrain
+- `src/serving/api.py` `/refresh` endpoint — pushes data only after refreshing scholarship cache
+
+## Docker Deployment (HuggingFace Spaces)
+
+The project includes a Dockerfile for deploying on HuggingFace Spaces with Docker runtime.
+
+```bash
+# Build locally
+docker build -t scholarshipid-model .
+
+# Run locally (sets SERVER_PORT=7860 to match HF Spaces)
+docker run -p 7860:7860 \
+  --name scholarship-id
+  -e HF_TOKEN=your_token_here \
+  -e SERVER_PORT=7860 \
+  scholarshipid-model
+```
+
+**How it works:**
+1. Container starts → `serve.py` runs automatically
+2. Pulls models/data from HuggingFace repos (configured in `.env`)
+3. Starts FastAPI on port 7860
+
+**Deploy to HF Spaces:**
+1. Push your repo to GitHub
+2. Create a new Space → select **Docker** runtime
+3. Connect your GitHub repo and give it a name like `scholarshipid-api`
+4. Set `HF_TOKEN` as a secret in the Space settings (Settings → Secrets and variables → Actions)
+5. The API will be live at `https://your-space-name.hf.space`
+
+## Data
+
+| File | Rows | Keterangan |
+|---|---|---|
+| `students.csv` | 20.000 | Profil siswa SMA |
+| `scholarships.csv` | 43 | Beasiswa S1 luar negeri |
+| `feedback.csv` | 100.000 | Interaksi: click / apply / accepted |
+
+## Monitoring (TensorBoard)
+
+TensorBoard logs are written to `outputs/logs/tb_{experiment_name}/`.
+
+```bash
+tensorboard --logdir outputs/logs/ --bind_all
+```
+
+## Serving (FastAPI)
+
+After training, start the inference server:
+
+```bash
+# Start the serving server
+python scripts/serve.py # or python -m scripts.serve
+```
+
+Server runs on `http://localhost:<PORT_DEFINED_AT_CONFIG>` with the following endpoints:
+
+### GET `/docs` — Swagger docs
+
+### Configuration
+
+All configuration is in `configs/default.yaml`:
+- **Model checkpoints**: `models.student_tower`, `models.scholarship_tower`
+- **Server settings**: `server.host`, `server.port`, `server.cors_origins`
+- **Auth**: `server.auth_required`, `server.auth_token` (set for production)
+- **Retraining**: `retraining.holdout_fraction` (0.0 = use all data)
+
+## Performance (test set)
+
+| Metric | Score |
+|---|---|
+| Recall@5 | ~0.32 |
+| NDCG@5 | ~0.22 |
+| MRR | ~0.21 |
