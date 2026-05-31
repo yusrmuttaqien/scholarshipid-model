@@ -56,12 +56,15 @@ def get_hf_credentials(config):
 
 
 def ensure_login(config):
-    """Ensure user is authenticated with HuggingFace."""
+    """Ensure user is authenticated with HuggingFace.
+
+    Returns the token if authenticated, or None if no token is configured
+    (HF operations will be skipped gracefully).
+    """
     token = get_hf_credentials(config)
     if not token:
-        print("Error: No HuggingFace token found.")
-        print("Set HF_TOKEN environment variable or add 'hf.token' to config.")
-        sys.exit(1)
+        print("Warning: No HuggingFace token found. Skipping HF operations.")
+        return None
 
     api = HfApi()
     try:
@@ -69,7 +72,7 @@ def ensure_login(config):
         print(f"Authenticated as {user['name']}")
     except Exception as e:
         print(f"Authentication failed: {e}")
-        sys.exit(1)
+        return None
     return token
 
 
@@ -81,9 +84,13 @@ def pull_data_artifacts(config_path="configs/default.yaml", repo_id=None):
     Downloads to:
         <raw_path>          (from config)
         outputs/logs/
+    
+    Returns early with a warning if no HuggingFace token is configured.
     """
     config = load_config(config_path)
     token = ensure_login(config)
+    if token is None:
+        return
 
     hf_config = config.get("hf", {})
     repo_id = repo_id or hf_config.get("repo_id_data")
@@ -140,9 +147,14 @@ def pull_data_artifacts(config_path="configs/default.yaml", repo_id=None):
 
 
 def push_data_artifacts(config_path="configs/default.yaml", message=None, repo_id=None):
-    """Push data and logs to the data repo."""
+    """Push data and logs to the data repo.
+
+    Returns early with a warning if no HuggingFace token is configured.
+    """
     config = load_config(config_path)
     token = ensure_login(config)
+    if token is None:
+        return
 
     hf_config = config.get("hf", {})
     repo_id = repo_id or hf_config.get("repo_id_data")
@@ -193,9 +205,14 @@ def push_data_artifacts(config_path="configs/default.yaml", message=None, repo_i
 # ── Model repo sync (checkpoints, embeddings) ───────────────────────────
 
 def pull_model_artifacts(config_path="configs/default.yaml", repo_id=None):
-    """Pull checkpoints and embeddings from the model repo."""
+    """Pull checkpoints and embeddings from the model repo.
+
+    Returns early with a warning if no HuggingFace token is configured.
+    """
     config = load_config(config_path)
     token = ensure_login(config)
+    if token is None:
+        return
 
     hf_config = config.get("hf", {})
     repo_id = repo_id or hf_config.get("repo_id_model")
@@ -254,9 +271,14 @@ def pull_model_artifacts(config_path="configs/default.yaml", repo_id=None):
 
 
 def push_model_artifacts(config_path="configs/default.yaml", message=None, repo_id=None):
-    """Push checkpoints and embeddings to the model repo."""
+    """Push checkpoints and embeddings to the model repo.
+
+    Returns early with a warning if no HuggingFace token is configured.
+    """
     config = load_config(config_path)
     token = ensure_login(config)
+    if token is None:
+        return
 
     hf_config = config.get("hf", {})
     repo_id = repo_id or hf_config.get("repo_id_model")

@@ -17,6 +17,8 @@ from typing import Optional
 
 import pandas as pd
 from fastapi import Depends, FastAPI, File, HTTPException, Query, UploadFile
+from fastapi.responses import HTMLResponse
+import os
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field
@@ -274,6 +276,13 @@ def create_app(engine: InferenceEngine) -> FastAPI:
 
     # ── Endpoints ────────────────────────────────────────────────────────
 
+    @app.get("/", response_class=HTMLResponse)
+    async def root():
+        """Landing page for ScholarshipID API — served from static/index.html."""
+        html_path = os.path.join(os.path.dirname(__file__), "static", "index.html")
+        with open(html_path, "r", encoding="utf-8") as f:
+            return HTMLResponse(content=f.read(), status_code=200)
+
     @app.post("/recommend", response_model=RecommendationResponse)
     async def recommend(
         student: StudentProfile,
@@ -401,6 +410,14 @@ def create_app(engine: InferenceEngine) -> FastAPI:
                     status_code=HTTPStatus.UNAUTHORIZED,
                     detail="Invalid or missing authorization token",
                 )
+
+        # Check if retraining is already in progress
+        retrain_info = engine.get_retraining_status()
+        if retrain_info["status"] == "training":
+            raise HTTPException(
+                status_code=409,
+                detail="Retraining already in progress. Check /health for status.",
+            )
 
         def _do_retrain():
             csv_parts = {}
