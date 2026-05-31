@@ -94,6 +94,55 @@
             transition: color 0.2s;
         }
         .links-section a:hover { color: #4a9c6d; }
+        .api-url-block {
+            display: flex;
+            align-items: center;
+            background: #e8f5ec;
+            border: 1px solid #c3e0cf;
+            border-radius: 8px;
+            padding: 14px 20px;
+            margin-bottom: 20px;
+            gap: 12px;
+        }
+        .api-url-block .url-container {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            min-width: 0;
+            flex: 1;
+        }
+        .api-url-label {
+            font-size: 12px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            color: #7a8b7a;
+            white-space: nowrap;
+        }
+        .api-url-block code {
+            font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+            font-size: 15px;
+            color: #2d5a3d;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .copy-btn {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 6px 14px;
+            border: none;
+            background: #2d5a3d;
+            color: white;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 13px;
+            font-weight: 600;
+            transition: background 0.2s;
+            flex-shrink: 0;
+            letter-spacing: 0.3px;
+        }
+        .copy-btn:hover { background: #1e4030; }
     </style>
 </head>
 <body>
@@ -105,6 +154,13 @@
     <div class="right-panel">
         <h2>Recommendation API</h2>
         <p class="description">Two-tower retrieval model for matching students to scholarships. Submit a student profile and get personalized scholarship recommendations.</p>
+        <div class="api-url-block">
+            <div class="url-container">
+                <span class="api-url-label">Base URL</span>
+                <code>https://ydmhmhm-scholarshipid.hf.space/</code>
+            </div>
+            <button class="copy-btn" onclick="copyUrl(this)" title="Copy to clipboard">📋 Copy</button>
+        </div>
         <a href="/docs" class="btn">View API Documentation</a>
         <div class="links-section">
             <h3>Resources</h3>
@@ -113,5 +169,13 @@
             <a href="https://huggingface.co/datasets/ydmhmhm/scholarshipid-data" target="_blank">Datasets Repository &rarr;</a>
         </div>
     </div>
+    <script>
+        function copyUrl(btn) {
+            navigator.clipboard.writeText('https://ydmhmhm-scholarshipid.hf.space/').then(() => {
+                btn.textContent = '✓ Copied!';
+                setTimeout(() => { btn.innerHTML = '📋 Copy'; }, 1500);
+            });
+        }
+    </script>
 </body>
 </html>
