@@ -8,6 +8,8 @@ Configuration is read from configs/default.yaml (all config in one place).
 Override model paths via CLI flags if needed:
     python scripts/serve.py --student-tower outputs/checkpoints/student_tower_best.keras \\
                             --scholarship-tower outputs/checkpoints/scholarship_tower_best.keras
+
+Before starting, pulls latest data + model artifacts from HuggingFace (checks both repos).
 """
 import os
 os.environ["OMP_NUM_THREADS"] = "1"
@@ -19,6 +21,7 @@ import sys
 
 import uvicorn
 
+from scripts.hf_sync import pull_data_artifacts, pull_model_artifacts
 from src.serving.inference_engine import InferenceEngine
 from src.serving.api import create_app
 
@@ -43,6 +46,12 @@ def parse_args():
 
 def main():
     args = parse_args()
+
+    # Pull data + model artifacts from HuggingFace before starting server (blocks until done)
+    print("Pulling data artifacts...")
+    pull_data_artifacts(config_path=args.config)
+    print("Pulling model artifacts...")
+    pull_model_artifacts(config_path=args.config)
 
     # Build and initialize inference engine (loads models, warms up SBERT, caches scholarships)
     # Pass None for paths not provided via CLI — InferenceEngine will resolve defaults from config

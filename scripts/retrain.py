@@ -8,6 +8,8 @@ Usage:
         --config configs/default.yaml
 
 This loads the trained models, merges new data, and triggers training in-process.
+After successful retraining, artifacts are pushed to HuggingFace.
+
 Useful for local testing before deploying to production.
 """
 import argparse
@@ -15,6 +17,7 @@ import sys
 
 import yaml
 
+from scripts.hf_sync import push_data_artifacts, push_model_artifacts
 from src.serving.inference_engine import (
     InferenceEngine,
     _parse_csv_with_json,
@@ -81,6 +84,12 @@ def main():
 
     if result.get("status") == "done":
         print("\n✅ Retraining completed successfully!")
+
+        # Push updated data + model artifacts to HuggingFace
+        print("\nPushing data artifacts...")
+        push_data_artifacts(config_path=args.config, message="Auto-push after retraining")
+        print("Pushing model artifacts...")
+        push_model_artifacts(config_path=args.config, message="Auto-push after retraining")
     else:
         print(f"\n❌ Retraining failed: {result.get('error')}")
         sys.exit(1)

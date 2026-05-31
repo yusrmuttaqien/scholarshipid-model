@@ -58,6 +58,13 @@ output:
   log_dir: outputs/logs/
   embedding_dir: outputs/embeddings/
 
+# HuggingFace artifact sync (pull before serving, push after retraining)
+# Two repos: data repo (raw CSV + logs) and model repo (checkpoints + embeddings)
+hf:
+  repo_id_data: ydmhmhm/scholarshipid-data           # Dataset repo (data/raw/, logs/)
+  repo_id_model: ydmhmhm/scholarshipid-model         # Model repo (checkpoints, embeddings)
+  token_env: HF_TOKEN  # single environment variable for both repos
+
 embeddings:
   scholarship_emb: outputs/embeddings/scholarship_emb.npy
   scholarship_ids: outputs/embeddings/scholarship_ids.npy

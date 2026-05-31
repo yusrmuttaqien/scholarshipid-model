@@ -13,7 +13,7 @@ Student Tower                     Scholarship Tower
       │                                   │
       └──────── Dot Product ──────────────┘
                      │
-               Top-5 Ranking
+              Top-5 Ranking
 ```
 
 - **Student Tower**: concat(structured_features=122, text_emb=384) → 128-dim L2-normalized embedding
@@ -40,8 +40,9 @@ Student Tower                     Scholarship Tower
 │   ├── embeddings/              # scholarship_emb.npy, scholarship_ids.npy
 │   └── logs/                    # TensorBoard logs (tb_{experiment_name}/)
 ├── scripts/
+│   ├── hf_sync.py               # HuggingFace artifact sync (pull/push)
 │   ├── precompute_text_embeddings.py  # Step 1: cache SBERT
-│   ├── train.py                       # Step 2: training
+│   ├── train.py                        # Step 2: training
 │   ├── evaluate.py                    # Step 3: evaluasi test set
 │   ├── export_embeddings.py           # Step 4: export untuk serving
 │   └── serve.py                       # Start FastAPI inference server
@@ -77,8 +78,20 @@ pip install -r requirements.txt # or use yusr-requirements.txt for CPU only comp
 pip install -e .
 
 # Optional, if Tensorboard failing to launch
-
 pip install 'setuptools<75'
+```
+
+### HuggingFace Setup (Artifact Sync)
+
+To sync model artifacts and data with HuggingFace:
+
+```bash
+# 1. Copy example env file and fill in your token
+cp .env.example .env
+# Edit .env with your HF_TOKEN from https://huggingface.co/settings/tokens
+
+# 2. Install python-dotenv for auto-loading
+pip install python-dotenv
 ```
 
 ## Quick Start
@@ -108,6 +121,33 @@ python scripts/export_embeddings.py \
 python scripts/export_embeddings.py \
   --scholarship_checkpoint outputs/checkpoints/scholarship_tower_best.keras
 ```
+
+## HuggingFace Artifact Sync
+
+Two separate repos are used for syncing:
+
+| Repo | Contents | Type |
+|---|---|---|
+| `ydmhmhm/scholarshipid-data` | `data/raw/`, `outputs/logs/` | Dataset |
+| `ydmhmhm/scholarshipid-model` | `checkpoints/`, `embeddings/` | Model |
+
+**CLI commands:**
+
+```bash
+# Pull data + model from HuggingFace (before starting serving)
+python scripts/hf_sync.py pull-data --config configs/default.yaml
+python scripts/hf_sync.py pull-model --config configs/default.yaml
+
+# Push data + model to HuggingFace (after retraining/refreshing)
+python scripts/hf_sync.py push-data --config configs/default.yaml --message "New data"
+python scripts/hf_sync.py push-model --config configs/default.yaml --message "Retrained"
+```
+
+**Auto-integration:**
+- `scripts/serve.py` — pulls both repos before FastAPI starts
+- `scripts/retrain.py` — pushes both repos after retraining
+- `src/serving/api.py` `/retrain` endpoint — pushes both repos (data + model) on API retrain
+- `src/serving/api.py` `/refresh` endpoint — pushes data only after refreshing scholarship cache
 
 ## Data
 

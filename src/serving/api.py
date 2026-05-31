@@ -5,6 +5,8 @@ Endpoints:
     POST /refresh    — Rebuild scholarship embedding cache from CSV (admin)
     POST /retrain    — Retrain model with new data (async, admin)
     GET  /health     — Health check (includes retraining status)
+
+After successful retraining, data + model artifacts are pushed to HuggingFace.
 """
 from __future__ import annotations
 
@@ -17,6 +19,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field
 
+from scripts.hf_sync import push_data_artifacts, push_model_artifacts
 from src.serving.inference_engine import InferenceEngine
 
 # Bearer security scheme for auth-protected endpoints
@@ -326,6 +329,15 @@ def create_app(engine: InferenceEngine) -> FastAPI:
         except Exception as exc:
             raise HTTPException(status_code=500, detail=str(exc))
 
+        # Push updated data artifacts to HuggingFace on success (data only)
+        try:
+            push_data_artifacts(
+                config_path=engine.config_path,
+                message="Auto-push after /refresh",
+            )
+        except Exception as e:
+            print(f"Warning: HF push failed after refresh: {e}", flush=True)
+
         return RefreshResponse(
             status="refreshed",
             total_scholarships=len(engine._sch_ids),
@@ -382,11 +394,25 @@ def create_app(engine: InferenceEngine) -> FastAPI:
             if feedbacks and feedbacks.filename:
                 csv_parts["feedbacks"] = feedbacks.file.read().decode("utf-8")
 
-            engine.retrain_from_csvs(
+            result = engine.retrain_from_csvs(
                 students_csv_text=csv_parts.get("students", None),
                 scholarships_csv_text=csv_parts.get("scholarships", None),
                 feedbacks_csv_text=csv_parts.get("feedbacks", None),
             )
+
+            # Push updated data + model artifacts to HuggingFace on success
+            if result.get("status") == "done":
+                try:
+                    push_data_artifacts(
+                        config_path=engine.config_path,
+                        message="Auto-push after API retraining",
+                    )
+                    push_model_artifacts(
+                        config_path=engine.config_path,
+                        message="Auto-push after API retraining",
+                    )
+                except Exception as e:
+                    print(f"Warning: HF push failed: {e}", flush=True)
 
         # Start training in background thread
         threading.Thread(target=_do_retrain, daemon=True).start()
