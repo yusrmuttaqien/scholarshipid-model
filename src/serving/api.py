@@ -201,6 +201,10 @@ class ScholarshipResult(BaseModel):
         description="Personalized recommendation explaining why this scholarship is a match",
     )
     metadata: dict
+    fit_scores: Optional[dict] = Field(
+        default=None,
+        description="Fit scores for academic, leadership, and language alignment (0-1 scale)",
+    )
 
 
 class RecommendationResponse(BaseModel):

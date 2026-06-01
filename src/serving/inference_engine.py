@@ -541,6 +541,7 @@ class InferenceEngine:
         """
         sch_emb_path = self.cfg["embeddings"]["scholarship_emb"]
         sch_ids_path = self.cfg["embeddings"]["scholarship_ids"]
+        sch_meta_path = self.cfg["embeddings"]["scholarship_metadata"]
 
         if not (os.path.exists(sch_emb_path) and os.path.exists(sch_ids_path)):
             _print("  No cached embeddings found — will recompute from CSVs.")
@@ -549,17 +550,47 @@ class InferenceEngine:
         try:
             self._sch_emb = np.load(sch_emb_path, allow_pickle=False)
             self._sch_ids = list(np.load(sch_ids_path, allow_pickle=True).tolist())
-            self._sch_metadata = []  # Will be built lazily from CSV if needed
 
-            # Build metadata from the saved IDs (minimal — just enough for API)
-            self._sch_metadata = [{"scholarship_id": sid} for sid in self._sch_ids]
+            # Load enriched metadata (name, mission_statement, selection_criteria, etc.)
+            if os.path.exists(sch_meta_path):
+                self._sch_metadata = list(
+                    np.load(sch_meta_path, allow_pickle=True).tolist()
+                )
+                _print(f"Loaded cached embeddings: {len(self._sch_emb)} scholarships "
+                       f"(shape {self._sch_emb.shape}, metadata: {len(self._sch_metadata)} entries)")
 
-            _print(f"Loaded cached embeddings: {len(self._sch_emb)} scholarships "
-                   f"(shape {self._sch_emb.shape})")
+                # Normalize JSON columns in metadata to ensure consistency with /refresh path
+                self._sch_metadata = self._normalize_cached_metadata()
+            else:
+                # Fallback: build minimal metadata from saved IDs if metadata file missing
+                self._sch_metadata = [{"scholarship_id": sid} for sid in self._sch_ids]
+                _print(f"Loaded cached embeddings: {len(self._sch_emb)} scholarships "
+                       f"(shape {self._sch_emb.shape}, minimal metadata — metadata.npy not found)")
+
             return True
         except Exception as e:
             print(f"  Failed to load cached embeddings: {e}", file=sys.stderr, flush=True)
             return False
+
+    def _normalize_cached_metadata(self) -> list[dict]:
+        """Normalize JSON columns in cached metadata to match /refresh output.
+
+        Reconstructs a DataFrame from the cached IDs, loads fresh CSV data,
+        normalizes JSON columns (selection_criteria, language_requirements),
+        and rebuilds metadata using _build_scholarship_metadata().
+        This ensures consistency between cold-boot and /refresh paths.
+        """
+        # Load fresh scholarships CSV to get properly parsed JSON columns
+        raw_path = self.cfg["data"]["raw_path"]
+        try:
+            scholarships_df = pd.read_csv(f"{raw_path}/scholarships.csv")
+            scholarships_df = self._normalize_json_columns(scholarships_df, SCHOLARSHIP_JSON_COLS)
+
+            # Rebuild metadata from normalized data
+            return _build_scholarship_metadata(scholarships_df)
+        except Exception:
+            # If we can't normalize, return original metadata as-is
+            return self._sch_metadata
 
     def initialize(self):
         """Load both towers and build initial scholarship embedding cache.
@@ -649,9 +680,19 @@ class InferenceEngine:
             sch_feat, training=False
         ).numpy()  # (N, 128) L2-normalized
 
-        # Build metadata for API responses
+        # Build metadata for API responses and persist to disk
         self._sch_ids = scholarships_df["scholarship_id"].tolist()
         self._sch_metadata = _build_scholarship_metadata(scholarships_df)
+
+        # Persist metadata to disk so subsequent cold boots have enriched data
+        sch_meta_path = self.cfg["embeddings"]["scholarship_metadata"]
+        np.save(sch_meta_path, np.array(self._sch_metadata, dtype=object))
+
+        # Persist embeddings + IDs to disk (so they survive server restart)
+        sch_emb_path = self.cfg["embeddings"]["scholarship_emb"]
+        sch_ids_path = self.cfg["embeddings"]["scholarship_ids"]
+        np.save(sch_emb_path, self._sch_emb)
+        np.save(sch_ids_path, np.array(self._sch_ids, dtype=object))
 
         print(f"Scholarship cache refreshed: {len(self._sch_ids)} scholarships "
               f"(embedding shape {self._sch_emb.shape})")

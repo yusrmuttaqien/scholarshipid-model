@@ -68,6 +68,7 @@ hf:
 embeddings:
   scholarship_emb: outputs/embeddings/scholarship_emb.npy
   scholarship_ids: outputs/embeddings/scholarship_ids.npy
+  scholarship_metadata: outputs/embeddings/scholarship_metadata.npy
 
 tensorboard:
   enabled: true
