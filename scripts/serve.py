@@ -67,7 +67,7 @@ def main():
     app = create_app(engine)
 
     # Start uvicorn server with config-driven host/port
-    print(f"Starting server on {engine.serving_config.server_host}:{engine.serving_config.server_port}")
+    print(f"Starting server on {engine.server_config.server_host}:{engine.server_config.server_port}")
 
     def shutdown(signum, frame):
         print("\nShutting down gracefully...")
@@ -79,8 +79,8 @@ def main():
     try:
         uvicorn.run(
             app,
-            host=engine.serving_config.server_host,
-            port=engine.serving_config.server_port,
+            host=engine.server_config.server_host,
+            port=engine.server_config.server_port,
         )
     except KeyboardInterrupt:
         pass

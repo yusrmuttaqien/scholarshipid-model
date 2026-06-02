@@ -113,22 +113,12 @@ python scripts/precompute_text_embeddings.py # or python -m scripts.precompute_t
 python scripts/train.py --config configs/default.yaml # or python -m scripts.train --config configs/default.yaml
 
 # Step 3 — Evaluasi pada test set (checkpoint paths default to configs/default.yaml)
-python scripts/evaluate.py \
+python scripts/evaluate.py \  # or python -m scripts.evaluate \
   --config configs/default.yaml
-
-# Override checkpoint paths if needed:
-python scripts/evaluate.py \
-  --config configs/default.yaml \
-  --student_checkpoint outputs/checkpoints/student_tower_best.keras \
-  --scholarship_checkpoint outputs/checkpoints/scholarship_tower_best.keras
 
 # Step 4 — Export scholarship embeddings untuk serving (checkpoint path defaults to config)
-python scripts/export_embeddings.py \
+python scripts/export_embeddings.py \  # or python -m scripts.export_embeddings \
   --config configs/default.yaml
-
-# Override checkpoint path if needed:
-python scripts/export_embeddings.py \
-  --scholarship_checkpoint outputs/checkpoints/scholarship_tower_best.keras
 ```
 
 ## HuggingFace Artifact Sync

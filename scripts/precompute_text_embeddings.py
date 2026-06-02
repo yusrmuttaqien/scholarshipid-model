@@ -13,8 +13,10 @@ import argparse
 import os
 import numpy as np
 import pandas as pd
+import yaml
 
 from src.utils.feature_engineering import encode_text
+from src.serving.helpers import _build_scholarship_metadata
 
 
 def parse_args():
@@ -88,9 +90,17 @@ def main():
     np.save(SCH_IDS_PATH, np.array(scholarship_ids, dtype=object))
     print(f"Saved: {SCH_IDS_PATH}  ({len(scholarship_ids)} IDs)")
 
+    # ── Scholarship Metadata ────────────────────────────────────────────────
+    SCH_META_PATH = cfg["embeddings"]["scholarship_metadata"]
+    metadata = _build_scholarship_metadata(scholarships_df)
+    np.save(SCH_META_PATH, np.array(metadata, dtype=object))
+    print(f"Saved: {SCH_META_PATH}  ({len(metadata)} entries)")
+
     print("\nDone. Shapes:")
     print(f"  students.npy    : {student_text_emb.shape}")
     print(f"  scholarships.npy: {scholarship_text_emb.shape}")
+    print(f"  scholarship_metadata.npy: {len(metadata)} entries")
+
 
 
 if __name__ == "__main__":

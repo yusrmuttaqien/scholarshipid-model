@@ -57,23 +57,76 @@ def _parse_csv_with_json(csv_text: str, json_cols: list[str]) -> pd.DataFrame:
 
 
 def _build_scholarship_metadata(df) -> list[dict]:
-    """Extract lightweight metadata from scholarship DataFrame for API responses."""
+    """Extract enriched metadata from scholarship DataFrame for API responses.
+
+    Includes fields useful for LLM-based recommendation generation:
+    - Core identity (id, name)
+    - Context (mission_statement, selection_criteria)
+    - Location & funding info
+    """
     metadata = []
     for _, row in df.iterrows():
+        # Build human-readable funding summary from individual boolean fields
+        funding_parts = []
+        if row.get("funding_covers_tuition"):
+            funding_parts.append("tuition")
+        if row.get("funding_covers_living"):
+            funding_parts.append("living expenses")
+        if row.get("funding_covers_airfare"):
+            funding_parts.append("airfare")
+        if row.get("funding_covers_insurance"):
+            funding_parts.append("insurance")
+        if funding_parts:
+            funding_summary = f"Covers {', '.join(funding_parts)}"
+        else:
+            funding_summary = "No specified funding coverage"
+
+        # Add monthly stipend info if available
+        stipend = row.get("funding_monthly_stipend")
+        if stipend and float(stipend) > 0:
+            funding_summary += f", plus ${float(stipend):,.0f}/month stipend"
+
         metadata.append({
             "scholarship_id": row.get("scholarship_id"),
+            "name": row.get("name"),
+            "mission_statement": row.get("mission_statement"),
+            "selection_criteria": row.get("selection_criteria"),
             "host_country": row.get("host_country"),
             "host_region": row.get("host_region"),
             "funding_is_full_funding": bool(row.get("funding_is_full_funding", False)),
+            "funding_coverage_summary": funding_summary,
         })
     return metadata
 
 
 def _scholarship_to_metadata(sch: dict) -> dict:
-    """Convert scholarship dict to lightweight metadata for API responses."""
+    """Convert scholarship dict to enriched metadata for API responses."""
+    # Build human-readable funding summary
+    funding_parts = []
+    if sch.get("funding_covers_tuition"):
+        funding_parts.append("tuition")
+    if sch.get("funding_covers_living"):
+        funding_parts.append("living expenses")
+    if sch.get("funding_covers_airfare"):
+        funding_parts.append("airfare")
+    if sch.get("funding_covers_insurance"):
+        funding_parts.append("insurance")
+    if funding_parts:
+        funding_summary = f"Covers {', '.join(funding_parts)}"
+    else:
+        funding_summary = "No specified funding coverage"
+
+    stipend = sch.get("funding_monthly_stipend")
+    if stipend and float(stipend) > 0:
+        funding_summary += f", plus ${float(stipend):,.0f}/month stipend"
+
     return {
         "scholarship_id": sch.get("scholarship_id"),
+        "name": sch.get("name"),
+        "mission_statement": sch.get("mission_statement"),
+        "selection_criteria": sch.get("selection_criteria"),
         "host_country": sch.get("host_country"),
         "host_region": sch.get("host_region"),
         "funding_is_full_funding": bool(sch.get("funding_is_full_funding", False)),
+        "funding_coverage_summary": funding_summary,
     }

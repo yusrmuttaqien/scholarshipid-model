@@ -14,9 +14,11 @@ import os
 import numpy as np
 import yaml
 import tensorflow as tf
+import pandas as pd
 
 from src.models.student_tower import L2Normalize
 from src.utils.data_loader import load_precomputed_features
+from src.serving.helpers import _build_scholarship_metadata
 
 
 def parse_args():
@@ -65,8 +67,14 @@ def main():
     np.save(cfg["embeddings"]["scholarship_emb"], sch_emb)
     np.save(cfg["embeddings"]["scholarship_ids"], np.array(sch_ids, dtype=object))
 
+    # Build and save metadata alongside embeddings
+    scholarships_df = pd.read_csv(f"{cfg['data']['raw_path']}/scholarships.csv")
+    metadata = _build_scholarship_metadata(scholarships_df)
+    np.save(cfg["embeddings"]["scholarship_metadata"], np.array(metadata, dtype=object))
+
     print(f"\nSaved: {cfg['embeddings']['scholarship_emb']}")
     print(f"Saved: {cfg['embeddings']['scholarship_ids']}")
+    print(f"Saved: {cfg['embeddings']['scholarship_metadata']}")
 
 
 if __name__ == "__main__":

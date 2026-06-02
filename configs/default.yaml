@@ -68,8 +68,23 @@ hf:
 embeddings:
   scholarship_emb: outputs/embeddings/scholarship_emb.npy
   scholarship_ids: outputs/embeddings/scholarship_ids.npy
+  scholarship_metadata: outputs/embeddings/scholarship_metadata.npy
 
 tensorboard:
   enabled: true
   histogram_freq: 1  # log embeddings every N epochs (0 = disabled)
   suffix: ""         # optional suffix for log directory name
+
+# LLM configuration for recommendation text and fit scores generation
+# Uses llama.cpp via OpenAI-compatible API (http://localhost:8080/v1)
+llm:
+  base_url_env: LLM_BASE_URL
+  model_env: LLM_MODEL
+  api_key_env: LLM_API_KEY
+  temperature: 0.0
+  max_tokens: 4096
+
+  # Retry configuration (exponential backoff for transient API errors)
+  max_retries: 2          # maximum retry attempts before giving up
+  retry_base_delay: 0.5   # initial delay in seconds between retries
+  retry_max_delay: 5.0    # maximum delay cap per retry attempt

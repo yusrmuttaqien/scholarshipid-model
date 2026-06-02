@@ -18,6 +18,12 @@ fastapi>=0.111.0
 uvicorn[standard]>=0.30.0
 pydantic>=2.7.0
 
+# PDF extraction for CV parsing
+PyMuPDF>=1.23.0
+
+# LLM (llama.cpp via OpenAI-compatible API)
+openai>=1.0.0
+
 # HuggingFace
 huggingface-hub>=0.20.0
 python-dotenv>=1.0.0
