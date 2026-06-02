@@ -296,7 +296,7 @@ def create_app(engine: InferenceEngine) -> FastAPI:
 
         The student body is encoded through the student tower, then matched
         against cached scholarship embeddings via dot-product (cosine similarity).
-        LLM-generated recommendation text and fit scores are added per result when available.
+        LLM-generated recommendation text and fit scores are added per result when available. Contact yusrmuttaqien to enable the LLM service, since now it's using hosted local AI.
         """
         try:
             results = engine.recommend(student.model_dump(), k=k)
