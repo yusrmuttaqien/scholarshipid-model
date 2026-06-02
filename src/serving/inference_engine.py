@@ -706,6 +706,43 @@ class InferenceEngine:
                 parts.append(str(val))
         return " ".join(parts)
 
+    def get_scholarship_score(self, scholarship_id: str, student_data: dict) -> Optional[dict]:
+        """Compute the match score for a single scholarship against a student profile.
+
+        Args:
+            scholarship_id: The ID of the scholarship to evaluate.
+            student_data: Student profile dict matching CSV schema.
+
+        Returns:
+            Dict with scholarship_id, score, metadata or None if not found.
+        """
+        if self.student_tower is None:
+            raise RuntimeError("Call initialize() before using get_scholarship_score()")
+
+        # Find the scholarship in cache
+        try:
+            idx = self._sch_ids.index(scholarship_id)
+        except ValueError:
+            return None
+
+        # Encode student (same as recommend())
+        csv_row = student_profile_to_csv_schema(student_data)
+        stu_struct = np.array([encode_student(csv_row)], dtype=np.float32)
+        stu_text_raw = self._build_student_text(student_data)
+        stu_text_emb = encode_text([stu_text_raw])
+
+        stu_feat = np.concatenate([stu_struct, stu_text_emb], axis=1)
+        stu_emb = self.student_tower(stu_feat, training=False).numpy()[0]  # (128,)
+
+        # Direct dot product with the single scholarship embedding
+        score = float(self._sch_emb[idx] @ stu_emb)
+
+        return {
+            "scholarship_id": self._sch_ids[idx],
+            "score": score,
+            "metadata": self._sch_metadata[idx],
+        }
+
     def _compute_scores(self, stu_emb: np.ndarray) -> np.ndarray:
         """Dot-product student embedding against cached scholarship embeddings.
 

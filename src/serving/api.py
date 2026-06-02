@@ -1,10 +1,11 @@
 """FastAPI application for scholarship recommendation serving.
 
 Endpoints:
-    POST /recommend  — Recommend top-K scholarships for a student profile
-    POST /refresh    — Rebuild scholarship embedding cache from CSV (admin)
-    POST /retrain    — Retrain model with new data (async, admin)
-    GET  /health     — Health check (includes retraining status)
+    POST /recommend          — Recommend top-K scholarships for a student profile
+    POST /recommend-single   — Match student to a single scholarship
+    POST /refresh            — Rebuild scholarship embedding cache from CSV (admin)
+    POST /retrain            — Retrain model with new data (async, admin)
+    GET  /health             — Health check (includes retraining status)
 
 After successful retraining, data + model artifacts are pushed to HuggingFace.
 """
@@ -192,7 +193,7 @@ class ScholarshipResult(BaseModel):
     """Single scholarship recommendation result."""
     scholarship_id: str
     score: float
-    rank: int
+    rank: int = 1
     recommendation: str = Field(
         default="",
         description="Personalized recommendation explaining why this scholarship is a match",
@@ -208,6 +209,16 @@ class RecommendationResponse(BaseModel):
     """Response for /recommend endpoint."""
     recommendations: list[ScholarshipResult]
     k: int
+
+
+class SingleScholarshipResult(ScholarshipResult):
+    """Single scholarship match result for /recommend-single endpoint."""
+    pass
+
+
+class RecommendSingleResponse(BaseModel):
+    """Response for /recommend-single endpoint."""
+    result: SingleScholarshipResult
 
 
 class RefreshResponse(BaseModel):
@@ -328,6 +339,64 @@ def create_app(engine: InferenceEngine) -> FastAPI:
         return RecommendationResponse(
             recommendations=[ScholarshipResult(**r) for r in results],
             k=k,
+        )
+
+    @app.post("/recommend-single", response_model=RecommendSingleResponse)
+    async def recommend_single(
+        student: StudentProfile,
+        scholarship_id: str = Query(
+            ...,
+            description="The ID of the scholarship to evaluate",
+            examples=["LPDP-2024-001"],
+        ),
+    ):
+        """Return match score for a single scholarship given a student profile.
+
+        The student is encoded through the student tower, then matched against
+        the specific scholarship embedding via dot-product (cosine similarity).
+        LLM-generated recommendation text and fit scores are added when available.
+        Contact yusrmuttaqien to enable the LLM service.
+        """
+        try:
+            score_data = engine.get_scholarship_score(
+                scholarship_id, student.model_dump()
+            )
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=str(exc))
+
+        if score_data is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Scholarship with id '{scholarship_id}' not found",
+            )
+
+        # Enrich with LLM-generated recommendation and fit scores
+        student_data = student.model_dump()
+        metadata = score_data.get("metadata", {})
+        if llm.is_available:
+            try:
+                print(f"[LLM] Processing {scholarship_id}", flush=True)
+                fit_scores = llm.compute_fit_scores(student_data, metadata)
+                score_data["fit_scores"] = fit_scores
+
+                enriched_student = dict(student_data)
+                if fit_scores:
+                    enriched_student["_fit_scores"] = fit_scores
+                rec = llm.generate_recommendation(enriched_student, metadata)
+                score_data["recommendation"] = rec
+                if not rec:
+                    print(f"[LLM] Empty recommendation for {scholarship_id}", flush=True)
+            except Exception as e:
+                print(
+                    f"[LLM] Enrichment failed for {scholarship_id}: {e}", flush=True
+                )
+
+        # Ensure fit_scores is present (even without LLM)
+        if "fit_scores" not in score_data:
+            score_data["fit_scores"] = None
+
+        return RecommendSingleResponse(
+            result=SingleScholarshipResult(**score_data),
         )
 
     @app.post("/refresh", response_model=RefreshResponse)
