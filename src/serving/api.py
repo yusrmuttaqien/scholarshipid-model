@@ -3,6 +3,7 @@
 Endpoints:
     POST /recommend          — Recommend top-K scholarships for a student profile
     POST /recommend-single   — Match student to a single scholarship
+    POST /parse-cv           — Parse a CV/resume (PDF or image) and extract student data
     POST /refresh            — Rebuild scholarship embedding cache from CSV (admin)
     POST /retrain            — Retrain model with new data (async, admin)
     GET  /health             — Health check (includes retraining status)
@@ -17,7 +18,7 @@ from http import HTTPStatus
 from typing import Optional
 
 import pandas as pd
-from fastapi import Depends, FastAPI, File, HTTPException, Query, UploadFile
+from fastapi import Body, Depends, FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.responses import HTMLResponse
 import os
 from fastapi.middleware.cors import CORSMiddleware
@@ -25,6 +26,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field
 
 from scripts.hf_sync import push_data_artifacts, push_model_artifacts
+from src.serving.cv_parser import parse_cv
 from src.serving.inference_engine import InferenceEngine
 from src.serving.llm_client import LLMClient
 
@@ -258,6 +260,68 @@ class RetrainingInfo(BaseModel):
     error: Optional[str] = None
 
 
+# ── CV Parser schemas ─────────────────────────────────────────────────────
+
+class LanguageCertificate(BaseModel):
+    """A language test result (e.g. IELTS, TOEFL)."""
+    test_type: str = Field(description="Test type", examples=["IELTS", "TOEFL"])
+    score: Optional[float] = Field(default=None, description="Test score")
+    valid_until: Optional[str] = Field(
+        default=None,
+        description="Expiry date (YYYY-MM-DD)",
+        examples=["2026-12-31"],
+    )
+
+
+class CVPersonalInfo(BaseModel):
+    """Personal information extracted from CV."""
+    full_name: Optional[str] = Field(default=None)
+    gender: Optional[str] = None
+    date_of_birth: Optional[str] = None
+    province: Optional[str] = None
+    economic_background: Optional[str] = None
+    from_underrepresented_region: Optional[bool] = None
+
+
+class CVAcademicInfo(BaseModel):
+    """Academic information extracted from CV."""
+    school_level: Optional[str] = None
+    major_program: Optional[str] = None
+    grade_class: Optional[str] = None
+    school_name: Optional[str] = None
+    school_tier_accreditation: Optional[str] = None
+    expected_graduation_year: Optional[int] = None
+    average_grade: Optional[float] = None
+    math_score: Optional[float] = None
+    english_score: Optional[float] = None
+    major_subject_average: Optional[float] = None
+    extracurricular_achievements: Optional[str] = None
+    olympiad_level: Optional[str] = None
+    intended_career_track: Optional[str] = None
+    willing_to_return_home: Optional[bool] = None
+    needs_full_funding: Optional[bool] = None
+
+
+class CVSkillsInfo(BaseModel):
+    """Skills information extracted from CV."""
+    hard_skills: list[str] = Field(default_factory=list)
+    soft_skills: list[str] = Field(default_factory=list)
+    languages: list[str] = Field(default_factory=list)
+    language_certificates: list[LanguageCertificate] = Field(default_factory=list)
+    target_countries: list[str] = Field(default_factory=list)
+
+
+class ParsedCVResponse(BaseModel):
+    """Response for the /parse-cv endpoint."""
+    personal: CVPersonalInfo
+    academic: CVAcademicInfo
+    skills: CVSkillsInfo
+    parsing_note: Optional[str] = Field(
+        default=None,
+        description="Note about the parsing process (e.g., 'PDF text-only', 'image-based')",
+    )
+
+
 # ── Application factory ───────────────────────────────────────────────────
 
 def create_app(engine: InferenceEngine) -> FastAPI:
@@ -281,8 +345,8 @@ def create_app(engine: InferenceEngine) -> FastAPI:
     # ── CORS Middleware ──────────────────────────────────────────────────
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=[engine.serving_config.cors_origins]
-            if engine.serving_config.cors_origins != "*"
+        allow_origins=[engine.server_config.cors_origins]
+            if engine.server_config.cors_origins != "*"
             else ["*"],
         allow_credentials=True,
         allow_methods=["*"],
@@ -300,15 +364,23 @@ def create_app(engine: InferenceEngine) -> FastAPI:
 
     @app.post("/recommend", response_model=RecommendationResponse)
     async def recommend(
-        student: StudentProfile,
+        auth_token: Optional[str] = Depends(_get_auth_token),
+        student: StudentProfile = Body(..., description="Student profile for recommendation"),
         k: int = Query(5, ge=1, le=50),
     ):
         """Return top-K scholarships for the given student profile.
 
         The student body is encoded through the student tower, then matched
         against cached scholarship embeddings via dot-product (cosine similarity).
-        LLM-generated recommendation text and fit scores are added per result when available. Contact yusrmuttaqien to enable the LLM service, since now it's using hosted local AI.
+        Note: This service uses a hosted Local AI as the LLM provider. Contact yusrmuttaqien to enable the LLM service.
         """
+        # Auth check
+        if engine.server_config.auth_required:
+            if auth_token is None or auth_token != engine.server_config.auth_token:
+                raise HTTPException(
+                    status_code=HTTPStatus.UNAUTHORIZED,
+                    detail="Invalid or missing authorization token",
+                )
         try:
             results = engine.recommend(student.model_dump(), k=k)
         except Exception as exc:
@@ -343,7 +415,8 @@ def create_app(engine: InferenceEngine) -> FastAPI:
 
     @app.post("/recommend-single", response_model=RecommendSingleResponse)
     async def recommend_single(
-        student: StudentProfile,
+        auth_token: Optional[str] = Depends(_get_auth_token),
+        student: StudentProfile = Body(..., description="Student profile for single scholarship match"),
         scholarship_id: str = Query(
             ...,
             description="The ID of the scholarship to evaluate",
@@ -354,9 +427,15 @@ def create_app(engine: InferenceEngine) -> FastAPI:
 
         The student is encoded through the student tower, then matched against
         the specific scholarship embedding via dot-product (cosine similarity).
-        LLM-generated recommendation text and fit scores are added when available.
-        Contact yusrmuttaqien to enable the LLM service.
+        Note: This service uses a hosted Local AI as the LLM provider. Contact yusrmuttaqien to enable the LLM service.
         """
+        # Auth check
+        if engine.server_config.auth_required:
+            if auth_token is None or auth_token != engine.server_config.auth_token:
+                raise HTTPException(
+                    status_code=HTTPStatus.UNAUTHORIZED,
+                    detail="Invalid or missing authorization token",
+                )
         try:
             score_data = engine.get_scholarship_score(
                 scholarship_id, student.model_dump()
@@ -421,8 +500,8 @@ def create_app(engine: InferenceEngine) -> FastAPI:
             )
 
         # Auth check
-        if engine.serving_config.auth_required:
-            if auth_token is None or auth_token != engine.serving_config.auth_token:
+        if engine.server_config.auth_required:
+            if auth_token is None or auth_token != engine.server_config.auth_token:
                 raise HTTPException(
                     status_code=HTTPStatus.UNAUTHORIZED,
                     detail="Invalid or missing authorization token",
@@ -496,8 +575,8 @@ def create_app(engine: InferenceEngine) -> FastAPI:
             )
 
         # Auth check
-        if engine.serving_config.auth_required:
-            if auth_token is None or auth_token != engine.serving_config.auth_token:
+        if engine.server_config.auth_required:
+            if auth_token is None or auth_token != engine.server_config.auth_token:
                 raise HTTPException(
                     status_code=HTTPStatus.UNAUTHORIZED,
                     detail="Invalid or missing authorization token",
@@ -546,6 +625,93 @@ def create_app(engine: InferenceEngine) -> FastAPI:
         return RetrainStartResponse(
             status="training_started",
             message="Retraining initiated. Check /health for status.",
+        )
+
+    # ── CV Parser endpoint ────────────────────────────────────────────────
+
+    _ALLOWED_CV_EXTENSIONS = {".pdf", ".png", ".jpg", ".jpeg", ".webp"}
+    _MAX_FILE_SIZE = 10 * 1024 * 1024  # 10 MB
+
+    @app.post("/parse-cv", response_model=ParsedCVResponse)
+    async def parse_cv_endpoint(
+        auth_token: Optional[str] = Depends(_get_auth_token),
+        file: UploadFile = File(..., description="CV or resume file (PDF, PNG, JPG, WEBP)"),
+    ):
+        """Parse a CV/resume and extract student profile data using multimodal LLM.
+
+        Accepts PDF files (text-based or scanned) and image files (PNG, JPG, WEBP).
+        Returns structured student data matching the frontend form schema.
+        Note: This service uses a hosted Local AI as the LLM provider. Contact yusrmuttaqien to enable the LLM service.
+        """
+        # Auth check
+        if engine.server_config.auth_required:
+            if auth_token is None or auth_token != engine.server_config.auth_token:
+                raise HTTPException(
+                    status_code=HTTPStatus.UNAUTHORIZED,
+                    detail="Invalid or missing authorization token",
+                )
+
+        # Validate file extension
+        if not file.filename:
+            raise HTTPException(status_code=422, detail="No filename provided")
+
+        ext = file.filename.lower().rsplit(".", 1)[-1] if "." in file.filename else ""
+        if f".{ext}" not in _ALLOWED_CV_EXTENSIONS:
+            allowed = ", ".join(_ALLOWED_CV_EXTENSIONS)
+            raise HTTPException(
+                status_code=422,
+                detail=f"Unsupported file type. Allowed: {allowed}",
+            )
+
+        # Read and validate size
+        file_bytes = await file.read()
+        if len(file_bytes) == 0:
+            raise HTTPException(status_code=422, detail="Empty file")
+
+        if len(file_bytes) > _MAX_FILE_SIZE:
+            raise HTTPException(
+                status_code=422,
+                detail=f"File too large. Maximum size is {_MAX_FILE_SIZE // (1024*1024)} MB",
+            )
+
+        # Parse CV using multimodal LLM
+        try:
+            parsed = parse_cv(llm, file_bytes, filename=file.filename)
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"CV parsing failed: {exc}")
+
+        if not parsed:
+            raise HTTPException(
+                status_code=502,
+                detail="CV parsing requires the Local AI LLM service, which is not currently configured. Contact yusrmuttaqien to enable.",
+            )
+
+        # Normalize the parsed dict to match our Pydantic model
+        personal = parsed.get("personal", {}) or {}
+        academic = parsed.get("academic", {}) or {}
+        skills = parsed.get("skills", {}) or {}
+
+        # Ensure language_certificates is a list of dicts
+        lang_certs_raw = skills.get("language_certificates") or []
+        if isinstance(lang_certs_raw, list):
+            lang_certs = [
+                LanguageCertificate(**c) if isinstance(c, dict) else LanguageCertificate()
+                for c in lang_certs_raw
+            ]
+        else:
+            lang_certs = []
+
+        return ParsedCVResponse(
+            personal=CVPersonalInfo(**personal),
+            academic=CVAcademicInfo(**academic),
+            skills=CVSkillsInfo(
+                hard_skills=skills.get("hard_skills") or [],
+                soft_skills=skills.get("soft_skills") or [],
+                languages=skills.get("languages") or [],
+                language_certificates=lang_certs,
+                target_countries=skills.get("target_countries") or [],
+            ),
+            parsing_note=parsed.get("_parsing_note"),
         )
 
     @app.get("/health", response_model=HealthResponse)

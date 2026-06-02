@@ -72,9 +72,9 @@ class InferenceEngine:
         self.config_path = config_path
 
         # Resolve default paths from ServingConfig when not provided via CLI
-        self.serving_config = ServingConfig(config_path)
-        self.student_tower_path = student_tower_path or self.serving_config.student_tower_path
-        self.scholarship_tower_path = scholarship_tower_path or self.serving_config.scholarship_tower_path
+        self.server_config = ServingConfig(config_path)
+        self.student_tower_path = student_tower_path or self.server_config.student_tower_path
+        self.scholarship_tower_path = scholarship_tower_path or self.server_config.scholarship_tower_path
 
         # Loaded from config
         self.cfg: Optional[dict] = None
@@ -176,7 +176,7 @@ class InferenceEngine:
         n_total = len(feedback_df)
 
         # ── Optional holdout split ────────────────────────────────────────
-        holdout_frac = self.serving_config.retrain_holdout_fraction
+        holdout_frac = self.server_config.retrain_holdout_fraction
         if holdout_frac > 0:
             n_holdout = int(holdout_frac * n_total)
             train_df = feedback_df.iloc[:n_total - n_holdout]

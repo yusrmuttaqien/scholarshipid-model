@@ -211,6 +211,59 @@ class LLMClient:
 
         return self._call_with_retry(prompt)
 
+    def _call_with_pdf_images(
+        self, file_bytes: bytes, mime_type: str, prompt: str
+    ) -> str:
+        """Call the LLM with a PDF or image file (vision/multimodal).
+
+        Converts the file to base64 and sends it as an image content part
+        alongside the text prompt.
+        """
+        import base64
+
+        if not self.is_available:
+            return ""
+
+        b64 = base64.b64encode(file_bytes).decode("ascii")
+        data_uri = f"data:{mime_type};base64,{b64}"
+
+        # Build a combined prompt with the image instruction
+        content_parts = [
+            {"type": "text", "text": prompt},
+            {"type": "image_url", "image_url": {"url": data_uri}},
+        ]
+
+        last_error: Optional[Exception] = None
+        delay = self._retry_base_delay
+
+        for attempt in range(self._max_retries):
+            try:
+                client = self._get_client()
+                model = os.environ.get(self._model_env, "qwen3-4b")
+                response = client.chat.completions.create(
+                    model=model,
+                    messages=[{"role": "user", "content": content_parts}],
+                    temperature=self._temperature,
+                    max_tokens=self._max_tokens,
+                )
+                text = (response.choices[0].message.content or "").strip()
+                if not text:
+                    print(f"[LLM] Empty response on attempt {attempt + 1}", flush=True)
+                return text
+
+            except Exception as e:
+                last_error = e
+                print(f"[LLM] Error (attempt {attempt + 1}/{self._max_retries}): {e}", flush=True)
+                if not self._should_retry(e):
+                    break
+                if attempt < self._max_retries - 1:
+                    jitter = random.uniform(0.5, 1.5) * delay
+                    time.sleep(min(jitter, self._retry_max_delay))
+                    delay *= 2
+
+        print(f"[LLM] All {self._max_retries} retries exhausted: {last_error}", flush=True)
+        return ""
+
     def _extract_json(self, text: str) -> Optional[dict[str, Any]]:
         """Extract and parse a JSON object from model response text.
 
