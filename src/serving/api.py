@@ -25,6 +25,7 @@ from pydantic import BaseModel, Field
 
 from scripts.hf_sync import push_data_artifacts, push_model_artifacts
 from src.serving.inference_engine import InferenceEngine
+from src.serving.llm_client import LLMClient
 
 # Bearer security scheme for auth-protected endpoints
 security = HTTPBearer(auto_error=False)
@@ -188,11 +189,7 @@ class StudentProfile(BaseModel):
 
 
 class ScholarshipResult(BaseModel):
-    """Single scholarship recommendation result.
-
-    The `recommendation` field is currently a placeholder (empty string).
-    Future: will contain LLM-generated personalized recommendation for the student.
-    """
+    """Single scholarship recommendation result."""
     scholarship_id: str
     score: float
     rank: int
@@ -261,6 +258,9 @@ def create_app(engine: InferenceEngine) -> FastAPI:
     Returns:
         Configured FastAPI application.
     """
+    # Initialize LLM client for recommendation text generation
+    llm = LLMClient(engine.cfg if engine.cfg else engine._load_config())
+
     app = FastAPI(
         title="ScholarshipID Recommendation API",
         description="Two-tower retrieval model for matching students to scholarships.",
@@ -296,15 +296,34 @@ def create_app(engine: InferenceEngine) -> FastAPI:
 
         The student body is encoded through the student tower, then matched
         against cached scholarship embeddings via dot-product (cosine similarity).
+        LLM-generated recommendation text and fit scores are added per result when available.
         """
         try:
             results = engine.recommend(student.model_dump(), k=k)
         except Exception as exc:
             raise HTTPException(status_code=500, detail=str(exc))
 
-        # Add placeholder recommendation field (future: LLM-generated per student)
+        # Enrich each result with LLM-generated recommendation and fit scores
+        student_data = student.model_dump()
         for r in results:
-            r["recommendation"] = ""
+            metadata = r.get("metadata", {})
+            if llm.is_available:
+                try:
+                    print(f"[LLM] Processing {r.get('scholarship_id')}", flush=True)
+                    # Compute fit scores first (used by recommendation for context)
+                    fit_scores = llm.compute_fit_scores(student_data, metadata)
+                    r["fit_scores"] = fit_scores
+
+                    # Pass fit scores to recommendation so it can tailor tone
+                    enriched_student = dict(student_data)
+                    if fit_scores:
+                        enriched_student["_fit_scores"] = fit_scores
+                    rec = llm.generate_recommendation(enriched_student, metadata)
+                    r["recommendation"] = rec
+                    if not rec:
+                        print(f"[LLM] Empty recommendation for {r.get('scholarship_id')}", flush=True)
+                except Exception as e:
+                    print(f"[LLM] Enrichment failed for {r.get('scholarship_id')}: {e}", flush=True)
 
         return RecommendationResponse(
             recommendations=[ScholarshipResult(**r) for r in results],
