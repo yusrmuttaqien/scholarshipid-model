@@ -241,6 +241,9 @@ class HealthResponse(BaseModel):
     student_tower_loaded: bool = Field(description="Whether student tower model is loaded")
     scholarship_tower_loaded: bool = Field(description="Whether scholarship tower model is loaded")
     cached_scholarships: int = Field(description="Number of scholarships in cache")
+    llm: str = Field(
+        description="LLM availability status ('available' or 'unavailable')",
+    )
     retraining: RetrainingInfo = Field(
         description="Current retraining job status and metadata",
     )
@@ -386,27 +389,26 @@ def create_app(engine: InferenceEngine) -> FastAPI:
         except Exception as exc:
             raise HTTPException(status_code=500, detail=str(exc))
 
-        # Enrich each result with LLM-generated recommendation and fit scores
+        # Enrich results with LLM-generated fit scores and recommendations.
+        # Batch scholarship metadata and call LLM once per batch (BATCH_SIZE=10)
+        # to minimize round-trips to the single-slot llama.cpp server.
         student_data = student.model_dump()
-        for r in results:
-            metadata = r.get("metadata", {})
-            if llm.is_available:
-                try:
-                    print(f"[LLM] Processing {r.get('scholarship_id')}", flush=True)
-                    # Compute fit scores first (used by recommendation for context)
-                    fit_scores = llm.compute_fit_scores(student_data, metadata)
-                    r["fit_scores"] = fit_scores
+        BATCH_SIZE = 10
 
-                    # Pass fit scores to recommendation so it can tailor tone
-                    enriched_student = dict(student_data)
-                    if fit_scores:
-                        enriched_student["_fit_scores"] = fit_scores
-                    rec = llm.generate_recommendation(enriched_student, metadata)
-                    r["recommendation"] = rec
-                    if not rec:
-                        print(f"[LLM] Empty recommendation for {r.get('scholarship_id')}", flush=True)
-                except Exception as e:
-                    print(f"[LLM] Enrichment failed for {r.get('scholarship_id')}: {e}", flush=True)
+        if llm.is_available:
+            all_metadata = [r.get("metadata", {}) for r in results]
+            for batch_start in range(0, len(all_metadata), BATCH_SIZE):
+                batch_meta = all_metadata[batch_start:batch_start + BATCH_SIZE]
+                print(f"[LLM] Processing batch {batch_start // BATCH_SIZE + 1} "
+                      f"({len(batch_meta)} scholarships)...", flush=True)
+                fit_scores_list, rec_list = llm.generate_batch_recommendation(
+                    student_data, batch_meta
+                )
+                for i, idx in enumerate(range(batch_start, min(batch_start + len(batch_meta), len(results)))):
+                    results[idx]["fit_scores"] = fit_scores_list[i]
+                    results[idx]["recommendation"] = rec_list[i]
+                    if not rec_list[i]:
+                        print(f"[LLM] Empty recommendation for {results[idx].get('scholarship_id')}", flush=True)
 
         return RecommendationResponse(
             recommendations=[ScholarshipResult(**r) for r in results],
@@ -449,19 +451,16 @@ def create_app(engine: InferenceEngine) -> FastAPI:
                 detail=f"Scholarship with id '{scholarship_id}' not found",
             )
 
-        # Enrich with LLM-generated recommendation and fit scores
+        # Enrich with LLM-generated recommendation and fit scores.
+        # Use the combined method (fit_scores + recommendation in one LLM call)
+        # to halve the number of round-trips to the single-slot llama.cpp server.
         student_data = student.model_dump()
         metadata = score_data.get("metadata", {})
         if llm.is_available:
             try:
                 print(f"[LLM] Processing {scholarship_id}", flush=True)
-                fit_scores = llm.compute_fit_scores(student_data, metadata)
+                fit_scores, rec = llm.generate_recommendation_with_fit_scores(student_data, metadata)
                 score_data["fit_scores"] = fit_scores
-
-                enriched_student = dict(student_data)
-                if fit_scores:
-                    enriched_student["_fit_scores"] = fit_scores
-                rec = llm.generate_recommendation(enriched_student, metadata)
                 score_data["recommendation"] = rec
                 if not rec:
                     print(f"[LLM] Empty recommendation for {scholarship_id}", flush=True)
@@ -716,14 +715,17 @@ def create_app(engine: InferenceEngine) -> FastAPI:
 
     @app.get("/health", response_model=HealthResponse)
     async def health():
-        """Health check — returns model loading status and retraining info."""
+        """Health check — returns model loading status, LLM availability, and retraining info."""
         retrain_info = engine.get_retraining_status()
+
+        llm_status = "available" if llm.is_reachable() else "unavailable"
 
         return HealthResponse(
             status="healthy",
             student_tower_loaded=engine.student_tower is not None,
             scholarship_tower_loaded=engine.scholarship_tower is not None,
             cached_scholarships=len(engine._sch_ids),
+            llm=llm_status,
             retraining=retrain_info,
         )
 
