@@ -38,8 +38,3 @@ Thumbs.db
 
 # Wandb
 wandb/
-
-# Other
-CLAUDE.md
-CONTEXT.md
-docs/
