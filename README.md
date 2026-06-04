@@ -50,12 +50,17 @@ Student Tower                     Scholarship Tower
 │   └── logs/                    # TensorBoard logs (tb_{experiment_name}/)
 ├── scripts/
 │   ├── hf_sync.py               # HuggingFace artifact sync (pull/push)
+│   ├── dataset_generator.py  # Step 0: generate dataset
 │   ├── precompute_text_embeddings.py  # Step 1: cache SBERT
 │   ├── train.py                        # Step 2: training
 │   ├── evaluate.py                    # Step 3: evaluasi test set
 │   ├── export_embeddings.py           # Step 4: export untuk serving
 │   └── serve.py                       # Start FastAPI inference server
 └── src/
+    ├── generator/
+    │   ├── data_seeds.py              # Hardcoded student and scholarship value    
+    │   ├── schemas.py                 # Data schemas
+    │   └── convert_csv.py             # Tool for save dataframe as csv
     ├── models/
     │   ├── student_tower.py
     │   ├── scholarship_tower.py
@@ -106,6 +111,9 @@ cp .env.example .env
 ## Quick Start
 
 ```bash
+# Step 0 — Generate dataset sintetis students.csv, scholarships.csv, feedback.csv
+python scripts/dataset_generator.py # or python -m scripts.dataset_generator
+
 # Step 1 — Pre-compute text embeddings (sekali saja, ~5-10 menit)
 python scripts/precompute_text_embeddings.py # or python -m scripts.precompute_text_embeddings
 
