@@ -11,6 +11,7 @@ and all methods return empty/None gracefully.
 """
 from __future__ import annotations
 
+import http.client
 import json
 import os
 import random
@@ -55,6 +56,59 @@ class LLMClient:
         api_key = os.environ.get(self._api_key_env, "")
         base_url = os.environ.get(self._base_url_env, "")
         return len(api_key.strip()) > 0 and len(base_url.strip()) > 0
+
+    def is_reachable(self) -> bool:
+        """Check if the LLM API is configured AND reachable.
+
+        Returns True only when:
+        1. base_url env var is set (configured)
+        2. The base URL responds to a lightweight HTTP HEAD request
+
+        Returns False if configuration is missing or the server is unreachable.
+        Uses a short timeout to avoid blocking the health check.
+        """
+        api_key = os.environ.get(self._api_key_env, "")
+        base_url = os.environ.get(self._base_url_env, "")
+
+        # Not configured — cannot be reachable
+        if not api_key.strip() or not base_url.strip():
+            return False
+
+        # Parse the base URL for a direct HTTP connection (no OpenAI client needed)
+        try:
+            from urllib.parse import urlparse
+            parsed = urlparse(base_url)
+            host = parsed.hostname or ""
+            port = parsed.port
+            scheme = parsed.scheme or "http"
+
+            if not host:
+                return False
+
+            # Use the parsed port, defaulting to 80/443 based on scheme
+            if port is None:
+                port = 443 if scheme == "https" else 80
+
+            # Connect with a short timeout (2 seconds)
+            connect_timeout = 2
+            if scheme == "https":
+                import ssl
+                context = ssl.create_default_context()
+                conn = http.client.HTTPSConnection(host, port, timeout=connect_timeout, context=context)
+            else:
+                conn = http.client.HTTPConnection(host, port, timeout=connect_timeout)
+
+            # Send a lightweight HEAD request to the base path
+            path = parsed.path or "/"
+            conn.request("HEAD", path)
+            resp = conn.getresponse()
+            conn.close()
+
+            # Any 2xx/3xx response means the server is reachable
+            return resp.status < 400
+
+        except Exception:
+            return False
 
     # ── Retry helpers ───────────────────────────────────────────────────────
 

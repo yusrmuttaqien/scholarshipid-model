@@ -241,6 +241,9 @@ class HealthResponse(BaseModel):
     student_tower_loaded: bool = Field(description="Whether student tower model is loaded")
     scholarship_tower_loaded: bool = Field(description="Whether scholarship tower model is loaded")
     cached_scholarships: int = Field(description="Number of scholarships in cache")
+    llm: str = Field(
+        description="LLM availability status ('available' or 'unavailable')",
+    )
     retraining: RetrainingInfo = Field(
         description="Current retraining job status and metadata",
     )
@@ -716,14 +719,17 @@ def create_app(engine: InferenceEngine) -> FastAPI:
 
     @app.get("/health", response_model=HealthResponse)
     async def health():
-        """Health check — returns model loading status and retraining info."""
+        """Health check — returns model loading status, LLM availability, and retraining info."""
         retrain_info = engine.get_retraining_status()
+
+        llm_status = "available" if llm.is_reachable() else "unavailable"
 
         return HealthResponse(
             status="healthy",
             student_tower_loaded=engine.student_tower is not None,
             scholarship_tower_loaded=engine.scholarship_tower is not None,
             cached_scholarships=len(engine._sch_ids),
+            llm=llm_status,
             retraining=retrain_info,
         )
 
