@@ -1,53 +1,19 @@
 """CV/Resume parser using multimodal LLM (vision + text).
 
-Supports:
-- PDF files (text-based and scanned)
-- Image files (PNG, JPG, JPEG, WEBP)
+Sends the raw file (PDF or image) as base64 to the LLM's vision endpoint.
+Works for both text-based PDFs and scanned images since the model reads them directly.
 
 Workflow:
-1. Extract content from file (PDF → text/images, Image → raw bytes)
-2. Send to LLM with structured prompt for student data extraction
-3. Parse JSON response into structured ParsedCVResponse
+1. Send raw file bytes to LLM with structured prompt
+2. Parse JSON response into structured ParsedCVResponse
 """
 from __future__ import annotations
 
 import json
-import sys
 from typing import TYPE_CHECKING, Any, Optional
 
 if TYPE_CHECKING:
     from .llm_client import LLMClient
-
-
-# ── PDF extraction helpers ───────────────────────────────────────────────────
-
-def _extract_pdf_text(pdf_bytes: bytes) -> str:
-    """Extract text from PDF using PyMuPDF. Returns empty string on failure."""
-    try:
-        import fitz  # PyMuPDF
-        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-        texts = []
-        for page in doc:
-            texts.append(page.get_text())
-        return "\n\n".join(texts)
-    except Exception as e:
-        print(f"[CVParser] PyMuPDF text extraction failed: {e}", file=sys.stderr, flush=True)
-        return ""
-
-
-def _extract_pdf_as_images(pdf_bytes: bytes) -> list[bytes]:
-    """Convert each PDF page to PNG image bytes using PyMuPDF."""
-    try:
-        import fitz  # PyMuPDF
-        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-        images = []
-        for page in doc:
-            pix = page.get_pixmap(dpi=150)
-            images.append(pix.tobytes("png"))
-        return images
-    except Exception as e:
-        print(f"[CVParser] PyMuPDF image extraction failed: {e}", file=sys.stderr, flush=True)
-        return []
 
 
 # ── MIME type helpers ────────────────────────────────────────────────────────
@@ -177,6 +143,9 @@ def parse_cv(
 ) -> Optional[dict[str, Any]]:
     """Parse a CV/resume file and extract student profile data.
 
+    Sends the raw file (PDF or image) to the LLM's vision endpoint for parsing.
+    Works for both text-based PDFs and scanned images.
+
     Args:
         llm_client: LLMClient instance with valid configuration.
         file_bytes: Raw file content (PDF or image).
@@ -191,38 +160,11 @@ def parse_cv(
 
     mime_type = _get_mime_type(filename, file_bytes)
 
-    # Handle PDF
-    if mime_type == "application/pdf":
-        pdf_text = _extract_pdf_text(file_bytes)
-        if pdf_text and len(pdf_text.strip()) > 20:
-            # Text-based PDF — send text to LLM
-            try:
-                response = llm_client._call_with_retry(
-                    f"{_STUDENT_CV_PROMPT}\n\n--- CV TEXT ---\n{pdf_text}"
-                )
-                return _extract_json_from_text(response) if response else None
-            except Exception as e:
-                print(f"[CVParser] PDF text parsing failed: {e}", flush=True)
-        else:
-            # Scanned PDF — convert to images
-            pdf_images = _extract_pdf_as_images(file_bytes)
-            if pdf_images:
-                try:
-                    response = llm_client._call_with_pdf_images(
-                        file_bytes, mime_type, _STUDENT_CV_PROMPT
-                    )
-                    return _extract_json_from_text(response) if response else None
-                except Exception as e:
-                    print(f"[CVParser] PDF image parsing failed: {e}", flush=True)
-
-    # Handle images (PNG, JPG, WEBP)
-    elif mime_type.startswith("image/"):
-        try:
-            response = llm_client._call_with_pdf_images(
-                file_bytes, mime_type, _STUDENT_CV_PROMPT
-            )
-            return _extract_json_from_text(response) if response else None
-        except Exception as e:
-            print(f"[CVParser] Image parsing failed: {e}", flush=True)
-
-    return None
+    try:
+        response = llm_client._call_with_pdf_images(
+            file_bytes, mime_type, _STUDENT_CV_PROMPT
+        )
+        return _extract_json_from_text(response) if response else None
+    except Exception as e:
+        print(f"[CVParser] Parsing failed: {e}", flush=True)
+        return None

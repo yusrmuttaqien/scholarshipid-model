@@ -95,6 +95,8 @@ def _build_scholarship_metadata(df) -> list[dict]:
             "host_region": row.get("host_region"),
             "funding_is_full_funding": bool(row.get("funding_is_full_funding", False)),
             "funding_coverage_summary": funding_summary,
+            "language_requirements": row.get("language_requirements"),
+            "target_recipient_profile": row.get("target_recipient_profile"),
         })
     return metadata
 
@@ -129,4 +131,6 @@ def _scholarship_to_metadata(sch: dict) -> dict:
         "host_region": sch.get("host_region"),
         "funding_is_full_funding": bool(sch.get("funding_is_full_funding", False)),
         "funding_coverage_summary": funding_summary,
+        "language_requirements": sch.get("language_requirements"),
+        "target_recipient_profile": sch.get("target_recipient_profile"),
     }

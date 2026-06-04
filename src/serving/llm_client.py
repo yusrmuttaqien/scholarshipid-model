@@ -202,26 +202,6 @@ class LLMClient:
         if future_goals:
             extra_fields += f"- Future Goals: {future_goals}\n"
 
-        # Include fit scores so the LLM can reason about match quality
-        fit_scores = student_data.get('_fit_scores', None)
-        if fit_scores:
-            academic = fit_scores.get('academic', '')
-            leadership = fit_scores.get('leadership', '')
-            language = fit_scores.get('language', '')
-            scores_section = (
-                f"## Fit Scores\n"
-                f"- Academic Alignment: {academic}\n"
-                f"- Leadership Alignment: {leadership}\n"
-                f"- Language Alignment: {language}\n"
-            )
-        else:
-            scores_section = ""
-
-        # Calculate match percentage for the header
-        academic_score = fit_scores.get('academic', 0) if fit_scores else 0
-        match_pct = int(academic_score * 100)
-        target_pct = min(98, match_pct + 5)
-
         prompt = (
             f"You are an expert scholarship counselor.\n\n"
             f"## Student Profile\n"
@@ -236,6 +216,8 @@ class LLMClient:
             f"- Leadership Experience: {student_data.get('leadership_experience_count', 0)} roles\n"
             f"- Olympiad Achievements: {student_data.get('olympiad_subjects', [])}\n"
             f"- Volunteer Work: {student_data.get('volunteer_experience_count', 0)} activities\n"
+            f"- Language Proficiency: {student_data.get('language_proficiency', 'N/A')}\n"
+            f"- Key Achievements: {student_data.get('achievements_narrative', 'N/A')}\n"
             f"{extra_fields}"
             f"\n## Scholarship\n"
             f"- Name: {scholarship_metadata.get('name', 'N/A')}\n"
@@ -243,19 +225,16 @@ class LLMClient:
             f"- Selection Criteria: {scholarship_metadata.get('selection_criteria', 'N/A')}\n"
             f"- Host Country: {scholarship_metadata.get('host_country', 'N/A')}\n"
             f"- Funding: {scholarship_metadata.get('funding_coverage_summary', 'N/A')}\n"
-            f"{scores_section}"
-            f"\n## Your Task\n"
+            f"- Language Requirements: {scholarship_metadata.get('language_requirements', 'N/A')}\n"
+            f"- Target Recipients: {scholarship_metadata.get('target_recipient_profile', 'N/A')}\n\n"
+            f"## Your Task\n"
             f"Output a concise AI Optimization card in HTML format.\n\n"
-            f"For matches below 95%:\n"
-            f"<h3>To increase your {match_pct}% Match to {target_pct}%</h3>\n"
+            f"<h3>Improve Your Match</h3>\n"
             f"<ul>\n"
             f"  <li>Action item 1 — specific and under 60 chars.</li>\n"
             f"  <li>Action item 2 — specific and under 60 chars.</li>\n"
             f"  <li>Action item 3 — specific and under 60 chars.</li>\n"
             f"</ul>\n\n"
-            f"For matches at or above 95%:\n"
-            f"<h3>Strong Match! Consider Applying Now</h3>\n"
-            f"<p>Your profile aligns exceptionally well with this scholarship.</p>\n\n"
             f"Rules:\n"
             f"- Be specific — mention exact fields, scores, or actions from the student's profile\n"
             f"- Keep each bullet under 60 characters\n"
@@ -270,22 +249,94 @@ class LLMClient:
     ) -> str:
         """Call the LLM with a PDF or image file (vision/multimodal).
 
-        Converts the file to base64 and sends it as an image content part
-        alongside the text prompt.
+        For images: converts to base64 and sends as data:image/*;base64,...
+        For PDFs: delegates to _call_with_pdf_pages which renders pages as PNG.
         """
         import base64
 
         if not self.is_available:
             return ""
 
+        # PDFs must be converted to images (LLM vision only accepts data:image/*)
+        if mime_type == "application/pdf":
+            return self._call_with_pdf_pages(file_bytes, prompt)
+
         b64 = base64.b64encode(file_bytes).decode("ascii")
-        data_uri = f"data:{mime_type};base64,{b64}"
+        data_uri = f"data:image/{mime_type.split('/')[-1]};base64,{b64}"
 
         # Build a combined prompt with the image instruction
         content_parts = [
             {"type": "text", "text": prompt},
             {"type": "image_url", "image_url": {"url": data_uri}},
         ]
+
+        last_error: Optional[Exception] = None
+        delay = self._retry_base_delay
+
+        for attempt in range(self._max_retries):
+            try:
+                client = self._get_client()
+                model = os.environ.get(self._model_env, "qwen3-4b")
+                response = client.chat.completions.create(
+                    model=model,
+                    messages=[{"role": "user", "content": content_parts}],
+                    temperature=self._temperature,
+                    max_tokens=self._max_tokens,
+                )
+                text = (response.choices[0].message.content or "").strip()
+                if not text:
+                    print(f"[LLM] Empty response on attempt {attempt + 1}", flush=True)
+                return text
+
+            except Exception as e:
+                last_error = e
+                print(f"[LLM] Error (attempt {attempt + 1}/{self._max_retries}): {e}", flush=True)
+                if not self._should_retry(e):
+                    break
+                if attempt < self._max_retries - 1:
+                    jitter = random.uniform(0.5, 1.5) * delay
+                    time.sleep(min(jitter, self._retry_max_delay))
+                    delay *= 2
+
+        print(f"[LLM] All {self._max_retries} retries exhausted: {last_error}", flush=True)
+        return ""
+
+    def _call_with_pdf_pages(
+        self, pdf_bytes: bytes, prompt: str
+    ) -> str:
+        """Convert PDF pages to PNG images and send them as a multimodal message.
+
+        Uses PyMuPDF (fitz) to render each page at 2x DPI for good text clarity.
+        All pages are sent together in one API call so the LLM can read the full document.
+        """
+        import base64
+        try:
+            import fitz  # PyMuPDF
+        except ImportError:
+            print("[LLM] PyMuPDF (fitz) not installed — cannot parse PDF pages", flush=True)
+            return ""
+
+        if not self.is_available:
+            return ""
+
+        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+        image_parts: list[dict[str, Any]] = []
+        for page_num, page in enumerate(doc):
+            mat = fitz.Matrix(2.0, 2.0)  # 2x zoom for clarity
+            pix = page.get_pixmap(matrix=mat)
+            img_bytes = pix.tobytes("png")
+            b64 = base64.b64encode(img_bytes).decode("ascii")
+            image_parts.append({
+                "type": "image_url",
+                "image_url": {"url": f"data:image/png;base64,{b64}"},
+            })
+        doc.close()
+
+        # Build content: text prompt first, then all page images
+        content_parts: list[dict[str, Any]] = [
+            {"type": "text", "text": prompt},
+        ]
+        content_parts.extend(image_parts)
 
         last_error: Optional[Exception] = None
         delay = self._retry_base_delay
@@ -485,11 +536,6 @@ class LLMClient:
         if future_goals:
             extra_fields += f"- Future Goals: {future_goals}\n"
 
-        # Calculate match percentage for the header (approximate without fit scores)
-        academic_score = student_data.get('overall_report_card_average', 0) / 100.0
-        match_pct = int(academic_score * 100)
-        target_pct = min(98, match_pct + 5)
-
         prompt = (
             f"You are an expert scholarship counselor.\n\n"
             f"## Student Profile\n"
@@ -504,28 +550,29 @@ class LLMClient:
             f"- Leadership Experience: {student_data.get('leadership_experience_count', 0)} roles\n"
             f"- Olympiad Achievements: {student_data.get('olympiad_subjects', [])}\n"
             f"- Volunteer Work: {student_data.get('volunteer_experience_count', 0)} activities\n"
+            f"- Language Proficiency: {student_data.get('language_proficiency', 'N/A')}\n"
+            f"- Key Achievements: {student_data.get('achievements_narrative', 'N/A')}\n"
             f"{extra_fields}"
             f"\n## Scholarship\n"
             f"- Name: {scholarship_metadata.get('name', 'N/A')}\n"
             f"- Mission: {scholarship_metadata.get('mission_statement', 'N/A')}\n"
             f"- Selection Criteria: {scholarship_metadata.get('selection_criteria', 'N/A')}\n"
             f"- Host Country: {scholarship_metadata.get('host_country', 'N/A')}\n"
-            f"- Funding: {scholarship_metadata.get('funding_coverage_summary', 'N/A')}\n\n"
+            f"- Funding: {scholarship_metadata.get('funding_coverage_summary', 'N/A')}\n"
+            f"- Language Requirements: {scholarship_metadata.get('language_requirements', 'N/A')}\n"
+            f"- Target Recipients: {scholarship_metadata.get('target_recipient_profile', 'N/A')}\n\n"
             f"## Your Task\n"
             f"Respond with a SINGLE JSON object containing two keys:\n\n"
             f"1. `fit_scores`: an object with three keys (academic, leadership, language) — each value between 0.0 and 1.0\n"
             f"2. `recommendation`: a short HTML string (use <h3>, <p>, <ul>, <li> tags)\n\n"
             f"For the recommendation:\n"
+            f"<h3>Improve Your Match</h3>\n"
+            f"<ul>\n"
+            f"  <li>Action item 1 — specific and under 60 chars.</li>\n"
+            f"  <li>Action item 2 — specific and under 60 chars.</li>\n"
+            f"  <li>Action item 3 — specific and under 60 chars.</li>\n"
+            f"</ul>\n\n"
         )
-
-        if match_pct >= 95:
-            prompt += (
-                f"- Output: `<h3>Strong Match! Consider Applying Now</h3><p>Your profile aligns exceptionally well with this scholarship.</p>`\n\n"
-            )
-        else:
-            prompt += (
-                f"- Output: `<h3>To increase your {match_pct}% Match to {target_pct}%</h3>` followed by a <ul> with 3 action items\n\n"
-            )
 
         prompt += (
             f"Rules:\n"
@@ -583,10 +630,6 @@ class LLMClient:
         # Format all scholarships for the prompt
         schols_str = ""
         for i, meta in enumerate(scholarship_metadata_list, start=1):
-            match_pct = int(
-                (student_data.get('overall_report_card_average', 0) / 100.0) * 100
-            )
-            target_pct = min(98, match_pct + 5)
             schols_str += (
                 f"\n### Scholarship {i}: {meta.get('name', 'N/A')}\n"
                 f"- ID: {meta.get('scholarship_id', 'N/A')}\n"
@@ -594,6 +637,8 @@ class LLMClient:
                 f"- Selection Criteria: {meta.get('selection_criteria', 'N/A')}\n"
                 f"- Host Country: {meta.get('host_country', 'N/A')}\n"
                 f"- Funding: {meta.get('funding_coverage_summary', 'N/A')}\n"
+                f"- Language Requirements: {meta.get('language_requirements', 'N/A')}\n"
+                f"- Target Recipients: {meta.get('target_recipient_profile', 'N/A')}\n"
             )
 
         prompt = (
@@ -610,6 +655,8 @@ class LLMClient:
             f"- Leadership Experience: {student_data.get('leadership_experience_count', 0)} roles\n"
             f"- Olympiad Achievements: {student_data.get('olympiad_subjects', [])}\n"
             f"- Volunteer Work: {student_data.get('volunteer_experience_count', 0)} activities\n"
+            f"- Language Proficiency: {student_data.get('language_proficiency', 'N/A')}\n"
+            f"- Key Achievements: {student_data.get('achievements_narrative', 'N/A')}\n"
             f"{extra_fields}"
             f"\n## Scholarships to Evaluate\n"
             f"{schols_str}"
@@ -620,15 +667,14 @@ class LLMClient:
             f"3. `recommendation`: a short HTML string (use <h3>, <p>, <ul>, <li> tags)\n\n"
         )
 
-        # Instruction for high-match scholarships
         prompt += (
-            f"For scholarships with GPA >= 95%: "
-            f"`<h3>Strong Match! Consider Applying Now</h3><p>Your profile aligns exceptionally well.</p>`\n\n"
-        )
-
-        prompt += (
-            f"For scholarships with GPA < 95%: "
-            f"`<h3>To increase your {match_pct}% Match to {target_pct}%</h3>` followed by a <ul> with 3 action items.\n\n"
+            f"For the recommendation:\n"
+            f"<h3>Improve Your Match</h3>\n"
+            f"<ul>\n"
+            f"  <li>Action item 1 — specific and under 60 chars.</li>\n"
+            f"  <li>Action item 2 — specific and under 60 chars.</li>\n"
+            f"  <li>Action item 3 — specific and under 60 chars.</li>\n"
+            f"</ul>\n\n"
         )
 
         prompt += (
@@ -639,7 +685,9 @@ class LLMClient:
             f"- Output ONLY a valid JSON array. No markdown, no backticks, no prose.\n"
         )
 
+        print(prompt)
         text = self._call_with_retry(prompt)
+        print(text)
         if not text:
             empty_scores = [None] * len(scholarship_metadata_list)
             return empty_scores, [""] * len(scholarship_metadata_list)
